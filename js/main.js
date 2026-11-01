@@ -76,7 +76,7 @@ async function keepAwake() {
   try { if ('wakeLock' in navigator && !wakeLock) { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => { wakeLock = null; }); } } catch { /* not allowed */ }
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && (location.hash === '#drive' || live?.started)) keepAwake(); });
-listenButtons((b) => { S.status.lastKey = b; if (live && location.hash === '#drive') live.action(b === 'mark' ? 'mark' : 'ack'); }, (k) => { S.status.lastKey = k; });
+listenButtons((b) => { S.status.lastKey = b; if (live && (location.hash === '#drive' || live.started)) live.action(b === 'mark' ? 'mark' : 'ack'); }, (k) => { S.status.lastKey = k; });
 
 // ---------- screens ----------
 function teardown() {
@@ -240,8 +240,36 @@ setInterval(() => {
   if (++bgK % 10 === 0) saveLive();
 }, 100);
 
+// The rally as one text file: settings, every logged event, checkpoint scores and a 1 s GPS track. For
+// the crew's own review, or as evidence if a control's score is questioned.
+const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
+function logText() {
+  const st = S.settings, e = live?.engine;
+  return [
+    `Rally Computer log, saved ${new Date().toString()}`,
+    `Car ${st.carNumber} · car 0 starts ${st.baseStart} · timing in ${st.timingUnit === 'cent' ? 'hundredths' : 'seconds'} · TA up to ${mmss(st.taMax_s ?? 1170)} · Richta controls: ${st.legStyle === 'control' ? 'each starts a new leg' : 'timing carries on from the restart'}`,
+    `Route: ${S.route?.instructions?.length ?? 0} instructions (${S.route?.source ?? 'unknown source'}), last changed ${S.route?.savedAt ? new Date(S.route.savedAt).toLocaleString() : '—'}`,
+    `Odometer factor: ${e?.calibrated ? e.K.toFixed(5) : 'not calibrated'} · clock ${clock.synced ? `synced to the master clock (${clock.ref})` : 'not synced to the master clock'}`,
+    '', '--- Events (rally time)', ...(live?.log || []).map((x) => `${fmtTod(x.t_s)}  ${x.text}`),
+    '', '--- Checkpoints scored by this app', ...(live?.cpErrors || []).map((c) => `#${c.n}  ${c.D.toFixed(2)} mi  ${c.err >= 0 ? '+' : ''}${c.err.toFixed(1)} s`),
+    '', '--- Distance engine (seconds since the app started)', ...(e?.log || []).map((x) => `${x.t.toFixed(1)}  ${x.text}`),
+    '', '--- GPS track, one point a second: UTC time, latitude, longitude, mph, route miles',
+    ...(live?.track || []).map(([u, la, lo, v, D]) => `${u ? new Date(u).toISOString() : ''},${la},${lo},${v ?? ''},${D}`),
+  ].join('\n');
+}
+const logName = () => { const d = new Date(), p = (x) => String(x).padStart(2, '0'); return `rally-log-${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.txt`; };
+function saveLogFile() {
+  const a = h('a', { href: URL.createObjectURL(new Blob([logText()], { type: 'text/plain' })), download: logName() });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+async function shareLogFile() {
+  try { await navigator.share({ files: [new File([logText()], logName(), { type: 'text/plain' })], title: 'Rally log' }); } catch { /* cancelled */ }
+}
+const canShareFiles = () => { try { return !!navigator.canShare?.({ files: [new File(['x'], 'x.txt', { type: 'text/plain' })] }); } catch { return false; } };
+
 function showLog() {
-  app.append(topbar('Log'));
+  app.append(topbar('Log', [h('button', { onclick: saveLogFile }, 'Save file'), ...(canShareFiles() ? [h('button', { onclick: shareLogFile }, 'Share')] : [])]));
   const lines = (live?.log || []).map((e) => `${fmtTod(e.t_s)}  ${e.text}`).join('\n');
   const eng = (live?.engine.log || []).map((e) => `${e.t.toFixed(1)}  ${e.text}`).join('\n');
   app.append(h('div', { class: 'log' }, lines || 'No events yet.', '\n\n— distance engine —\n', eng || '—', '\n\n— voice —\n',
@@ -271,6 +299,11 @@ async function diagLines() {
   L.push(`Web Serial (only for Bluetooth Classic OBD adapters): ${'serial' in navigator ? 'yes' : 'no'}`);
   try { L.push(`Location permission: ${(await navigator.permissions.query({ name: 'geolocation' })).state}`); } catch { L.push('Location permission: unknown'); }
   L.push(`Keep screen awake: ${'wakeLock' in navigator ? 'yes' : 'no (set the screen timeout to its maximum)'}`);
+  try { const b = await navigator.getBattery?.(); if (b) L.push(`Battery: ${Math.round(b.level * 100)}%, ${b.charging ? 'charging' : 'NOT charging: plug in the 12 V charger'}`); } catch { /* not available */ }
+  const off = -new Date().getTimezoneOffset() / 60;
+  L.push(`Local time: ${new Date().toLocaleTimeString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone}, UTC${off >= 0 ? '+' : ''}${off}). Check it matches the official clock to the minute.`);
+  L.push(`Time allowance: Richta steps up to ${mmss(S.settings.taMax_s ?? 1170)} per leg · Richta controls: ${S.settings.legStyle === 'control' ? 'each starts a new leg' : 'timing carries on from the restart'} (Settings, from the GIs)`);
+  L.push('Richta (if the GIs use it): on the phone, not this tablet. Register at check-in (Unregister an old event first); keep it open, on screen and plugged in; phone Bluetooth off so its chime plays. A backup device uses car number + 100.');
   const voices = await new Promise((res) => {
     const v = speechSynthesis?.getVoices?.() || [];
     if (v.length) return res(v);

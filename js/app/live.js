@@ -4,13 +4,15 @@
 
 import { DistanceEngine, ImuFrame, ImuQuiet, haversine } from '../core/fusion.js';
 import { TurnDetector, RouteProgress } from '../core/turns.js';
-import { buildSchedule, recommendTA, carStartTod } from '../core/timing.js';
+import { buildSchedule, recommendTA, carStartTod, richtaLadder, taPresses } from '../core/timing.js';
 import { targetSpeed, capFor, SpeedAnnouncer, LimitTracker } from '../core/speed.js';
 import { buildDelays, plannedOffsetFn, slowdownLossS } from '../core/plan.js';
 import { fmtTod, zoneEdge } from '../core/instruction.js';
 import { instructionPhrase } from './voice.js';
 
 const wrap180 = (d) => ((d + 540) % 360) - 180;
+const fmtMS = (s) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
+const sayMS = (s) => { const m = Math.floor(s / 60), r = Math.round(s % 60); return m ? `${m} minute${m > 1 ? 's' : ''}${r ? ` ${r}` : ''}` : `${r} seconds`; };
 
 export class LiveLoop {
   constructor({ settings, clock, voice, onLog = () => {} }) {
@@ -28,7 +30,7 @@ export class LiveLoop {
     this.headings = []; this.prevRb = null; this.gnssAccel = 0;
     this.lastFix = null; this.pendingGap = null;
     this.spokenSpeed = null; this.offSince = null; this.pauseTaken = new Set();
-    this.log = [];
+    this.log = []; this.track = []; this.trackT = null;   // track: 1 s GPS points for the exported log
   }
 
   addLog(text, extra = {}) {
@@ -83,10 +85,10 @@ export class LiveLoop {
       }
       if (sm.headingValid && sm.speed_mps > 3) this.pushHeading(sm.t, sm.heading_deg);
       if (yaw !== null) { const ev = this.turns.push(sm.t, yaw, this.engine.s); if (ev) this.onTurn(ev); }
-      if (sm.fixOk) this.onFix(sm.lat, sm.lon, sm.t);
+      if (sm.fixOk) { this.onFix(sm.lat, sm.lon, sm.t); this.trackPoint(sm.t, sm.utc_ms, sm.lat, sm.lon, sm.speed_mps); }
     } else if (sm.src === 'gps') {
       this.engine.ingest(sm);
-      if (sm.acc_m < 30) this.onFix(sm.lat, sm.lon, sm.t);
+      if (sm.acc_m < 30) { this.onFix(sm.lat, sm.lon, sm.t); if (!(sm.t - this.engine.last.racebox < 2)) this.trackPoint(sm.t, sm.wallMs, sm.lat, sm.lon, sm.speed_mps); }
       const rbLive = sm.t - this.engine.last.racebox < 2;
       if (!rbLive && sm.heading_deg !== null && sm.speed_mps > 3) {
         const prev = this.headings[this.headings.length - 1];
@@ -94,6 +96,21 @@ export class LiveLoop {
         if (prev) { const ev = this.turns.push(sm.t, -wrap180(sm.heading_deg - prev.h) / Math.max(0.2, sm.t - prev.t), this.engine.s); if (ev) this.onTurn(ev); }
       }
     } else if (sm.src === 'obd') this.engine.ingest(sm);
+  }
+
+  trackPoint(t, utcMs, lat, lon, v) {
+    if (this.trackT !== null && t - this.trackT < 1) return;
+    this.trackT = t;
+    this.track.push([utcMs ?? null, +lat.toFixed(6), +lon.toFixed(6), v == null ? null : +(v / 0.44704).toFixed(1), +this.engine.D.toFixed(3)]);
+    if (this.track.length > 6 * 3600) this.track.shift();
+  }
+
+  // Time allowances in the current leg (since the last restart or control): what Richta's TA shows.
+  legTA() {
+    const D = this.engine.D;
+    let start = -Infinity;
+    for (const x of this.schedule.events) if ((x.kind === 'restart' || x.kind === 'control') && x.D <= D + 1e-6) start = Math.max(start, x.D);
+    return this.ev.tas.filter((t) => t.D >= start - 1e-9).reduce((a, t) => a + t.s, 0);
   }
 
   pushHeading(t, h) { this.headings.push({ t, h, D: this.engine.D }); while (this.headings.length && this.headings[0].t < t - 60) this.headings.shift(); }
@@ -223,7 +240,23 @@ export class LiveLoop {
         this.addLog(`Checkpoint #${p.n} ${p.kind} ${tod}${err}`, { claim: true });
         break;
       }
-      case 'ta': this.ev.tas.push({ D: e.D, s: p.s }); this.undo.push({ kind: 'ta' }); this.rebuild(); this.addLog(`TA ${p.s / 60} min declared at ${e.D.toFixed(2)}`, { claim: true }); break;
+      case 'ta': {   // p.total: the leg's TA total to match Richta's display; p.s: an amount to add
+        const cur = this.legTA(), add = p.total !== undefined ? p.total - cur : p.s;
+        if (!add) break;
+        this.ev.tas.push({ D: e.D, s: add }); this.undo.push({ kind: 'ta' }); this.rebuild();
+        const total = cur + add, k = taPresses(cur, total, richtaLadder(this.settings.taMax_s ?? 1170));
+        const richta = k ? ` · Richta: ${k > 0 ? 'TA+' : 'TA−'} ×${Math.abs(k)} to show ${fmtMS(total)}` : '';
+        this.addLog(`TA ${add > 0 ? '+' : '−'}${fmtMS(Math.abs(add))} at ${e.D.toFixed(2)}: ${fmtMS(total)} this leg${richta}`, { claim: true });
+        if (k) this.voice?.speak(`Time allowance ${total ? sayMS(total) : 'cleared'}. In Richta, T A ${k > 0 ? 'plus' : 'minus'} ${Math.abs(k) === 1 ? 'once' : `${Math.abs(k)} times`}.`, { key: `ta:${this.ev.tas.length}`, alert: true });
+        break;
+      }
+      case 'beep': {   // Richta chimed at one of its hidden controls
+        const tod = p.tod ?? this.clock.nowTod(), D = p.D ?? e.D, delta = p.delta ?? this.state?.delta_s ?? null;
+        const resets = this.settings.legStyle === 'control';
+        if (resets) { this.ev.restarts.push({ D, tod }); this.undo.push({ kind: 'restart' }); this.rebuild(); }
+        this.addLog(`Richta control at ${fmtTod(tod)}${delta !== null ? `: this app said ${Math.abs(delta).toFixed(1)} s ${delta >= 0 ? 'late' : 'early'}` : ''}${resets ? '; next leg timed from here, TA back to 0:00' : ''}`, { claim: true });
+        break;
+      }
       case 'restart': this.ev.restarts.push({ D: e.D, tod: typeof p.tod === 'number' ? fmtTod(p.tod) : p.tod }); this.undo.push({ kind: 'restart' }); this.rebuild(); this.addLog(`Restart ${p.tod}`); break;
       case 'jump': this.progress.jump(p.n); this.addLog(`Next instruction set to #${p.n}`); break;
       case 'here': {   // the navigator says the car is at instruction #n now (after a pause)
@@ -334,7 +367,8 @@ export class LiveLoop {
     const said = this.ann.update(now, adv);
     const transitRow = this.started && sch.inTransit(D) ? sch.rows.find((r) => r.D !== null && r.D > D && r.zone === 'transit' && zoneEdge(r) === 'end') : null;
     const arrive = transitRow ? sch.perfectTimeAt(transitRow.D) : null;
-    const ta = delta !== null && adv ? recommendTA({ deltaS: delta, offsetS: offset, castMph: cast, capMph: adv.cap, stepS: st.taStep_s }) : null;
+    const taLeg = this.started ? this.legTA() : 0;
+    const ta = delta !== null && adv ? recommendTA({ deltaS: delta, offsetS: offset, castMph: cast, capMph: adv.cap, ladder: richtaLadder(st.taMax_s ?? 1170), currentS: taLeg }) : null;
     const next = pr.next;
     const idx = next ? sch.rows.indexOf(next) : -1;
     const after = idx >= 0 ? sch.rows.slice(idx + 1, idx + 4) : [];
@@ -358,7 +392,7 @@ export class LiveLoop {
       alert, hold, ta_suggest: ta && ta.taS > 0 ? ta : null,
       health: { ...e.health, k: e.K, last_resync: this.lastResync ?? '' },
       speed_mph: e.v / 0.44704, stopped: e.v < 0.3, unit: st.timingUnit, started: this.started, calibrated: e.calibrated,
-      recovering: !!this.recover,
+      recovering: !!this.recover, ta_leg_s: taLeg, ta_max_s: st.taMax_s ?? 1170, leg_style: st.legStyle ?? 'restart',
     };
     return this.state;
   }

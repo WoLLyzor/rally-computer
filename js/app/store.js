@@ -15,6 +15,7 @@ export const store = {
 export const DEFAULT_SETTINGS = {
   profile: 'offline', apiKey: '', modelA: 'claude-opus-5-5', modelB: 'claude-opus-5-5',
   carNumber: 1, baseStart: '11:00:00', timingUnit: 's', alpha: 0.5, defaultLimit: 55, taStep_s: 30, horizonMi: 0.15, horizonS: 15,
+  taMax_s: 1170, legStyle: 'restart',   // Richta TA ladder maximum per leg; what a Richta control does to timing (GIs)
   voice: true, voiceRate: 1.0, sensorSource: 'auto', obdLagS: 0.3,
 };
 

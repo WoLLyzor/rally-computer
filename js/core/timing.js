@@ -183,25 +183,44 @@ export function carStartTod(baseTod, carNumber) {
   return (typeof baseTod === 'string' ? parseTod(baseTod) : baseTod) + 60 * carNumber;
 }
 
+// Richta Competitor's time allowance (Milwaukee SCCA and PCA guides; Alcan setup sheet): TA+ steps the
+// leg's running total 0:10, 0:20, 0:30, then a minute more per press (1:30, 2:30 …) up to the event's
+// maximum (19:30 in those guides, 9:30 at Alcan); TA− steps back down.
+export function richtaLadder(maxS = 1170) {
+  const L = [10, 20, 30];
+  for (let s = 90; s <= maxS; s += 60) L.push(s);
+  return L.filter((s) => s <= maxS);
+}
+// Richta button presses from one leg total to another (+ TA+, − TA−); null when either is off the ladder.
+export function taPresses(fromS, toS, ladder) {
+  const at = (s) => (s === 0 ? -1 : ladder.indexOf(s));
+  const i = at(fromS), j = at(toS);
+  return (fromS !== 0 && i < 0) || (toS !== 0 && j < 0) ? null : j - i;
+}
+
 // Time Allowance recommendation (§7 Speed advisor; rally_guide §6 TA). TAs come in stepS increments
-// (default 30 s). Picks the TA that leaves the smallest residual that can be fixed legally within
-// withinMi: a late residual must be recoverable at the capped speed, an early one by easing off.
-export function recommendTA({ deltaS, offsetS = 0, castMph, capMph, stepS = 30, withinMi = 1.0, minMph = null }) {
+// (default 30 s), or as totals on a ladder (Richta) starting from the leg's currentS. Picks the TA that
+// leaves the smallest residual that can be fixed legally within withinMi: a late residual must be
+// recoverable at the capped speed, an early one by easing off; otherwise the next one up (then wait).
+export function recommendTA({ deltaS, offsetS = 0, castMph, capMph, stepS = 30, withinMi = 1.0, minMph = null, ladder = null, currentS = 0 }) {
   const behind = deltaS - offsetS;
   if (!(castMph > 0) || !(behind > 0)) return null;
   const gainPerMi = capMph > castMph ? 3600 / castMph - 3600 / capMph : 0;
   if (behind <= gainPerMi * withinMi) return null;   // recoverable without a TA
   const slow = minMph ?? Math.max(castMph - 10, castMph * 0.75);
   const losePerMi = 3600 / slow - 3600 / castMph;
+  const adds = [];
+  if (ladder) for (const T of ladder) { if (T > currentS) adds.push(T - currentS); }
+  else for (let k = Math.max(1, Math.floor(behind / stepS)); k <= Math.ceil(behind / stepS) + 1; k++) adds.push(k * stepS);
+  if (!adds.length) return null;   // already at the maximum
   const options = [];
-  for (let k = Math.floor(behind / stepS); k <= Math.ceil(behind / stepS) + 1; k++) {
-    if (k <= 0) continue;
-    const ta = k * stepS;
+  for (const ta of adds) {
     const residual = behind - ta;      // >0 still late, <0 early
     const ok = residual >= 0 ? residual <= gainPerMi * withinMi : -residual <= losePerMi * withinMi;
     if (ok) options.push({ taS: ta, residualS: residual });
   }
-  if (!options.length) return { taS: Math.ceil(behind / stepS) * stepS, residualS: behind - Math.ceil(behind / stepS) * stepS };
+  if (!options.length) { const ta = adds.find((a) => a >= behind) ?? adds[adds.length - 1]; options.push({ taS: ta, residualS: behind - ta }); }
   options.sort((a, b) => Math.abs(a.residualS) - Math.abs(b.residualS) || a.residualS - b.residualS);
-  return options[0];
+  const best = options[0];
+  return ladder ? { ...best, totalS: currentS + best.taS, presses: taPresses(currentS, currentS + best.taS, ladder) } : best;
 }

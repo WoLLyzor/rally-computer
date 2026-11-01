@@ -2,6 +2,7 @@
 // mountNavigator(container, { instructions, table, unit, onAction }) -> { update, setRoute, setLog, destroy }
 import { h, clear, fmtOm, actionSummary, actionIcon, explainEl, digestEls } from './dom.js';
 import { glossaryOf } from '../core/extract.js';
+import { richtaLadder, taPresses } from '../core/timing.js';
 import { deltaView, fmtCountdown } from './driver.js';
 
 const p2 = (n) => String(n).padStart(2, '0');
@@ -78,16 +79,37 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
         h('button', { class: 'nv-bigbtn', onclick: closeSheet }, 'Cancel'),
         h('button', { class: 'nv-bigbtn nv-go', onclick: () => { const tod = ed.get(); closeSheet(); act('checkpoint', { n, kind, tod }); } }, 'Log')));
   }
+  // Time allowance as Richta keeps it: one running total per leg on its fixed steps. The crew picks the
+  // total Richta should show; the app says which button to press there and how many times.
+  const ms = (s) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
   function taSheet() {
-    const sug = live && live.ta_suggest;
-    const opts = [[30, '½'], [60, '1'], [90, '1½'], [120, '2'], [150, '2½'], [180, '3']];
-    openSheet('Time allowance',
-      h('div', { class: 'nv-tasug' }, sug
-        ? `Suggested: ${(sug.taS / 60).toFixed(1)} min (${sug.taS} s), leaves ${sug.residualS > 0 ? '+' : ''}${sug.residualS} s`
-        : 'No suggestion available'),
-      h('div', { class: 'nv-tagrid' }, opts.map(([s, l]) =>
-        h('button', { class: 'nv-bigbtn' + (sug && sug.taS === s ? ' nv-go' : ''), onclick: () => { closeSheet(); act('ta', { s }); } }, l + ' min'))),
+    const sug = live && live.ta_suggest, cur = (live && live.ta_leg_s) || 0;
+    const ladder = richtaLadder((live && live.ta_max_s) || 1170);
+    const press = (to) => { const k = taPresses(cur, to, ladder); return k == null ? '' : k > 0 ? `Richta TA+ ×${k}` : `Richta TA− ×${-k}`; };
+    const above = ladder.filter((x) => x > cur);
+    const shown = above.slice(0, Math.max(9, sug ? above.indexOf(sug.totalS) + 3 : 0));
+    const below = [0, ...ladder].filter((x) => x < cur);
+    const pick = (x, go) => h('button', { class: 'nv-bigbtn nv-tabtn' + (go ? ' nv-go' : ''), onclick: () => { closeSheet(); act('ta', { total: x }); } },
+      h('b', {}, ms(x)), h('small', {}, press(x)));
+    const after = !sug ? '' : sug.residualS < -1 ? `, then lose ${Math.round(-sug.residualS)} s (ease off, or wait safely off the road)` : sug.residualS > 1 ? `, then make up ${Math.round(sug.residualS)} s` : '';
+    openSheet(`Time allowance · this leg ${ms(cur)}`,
+      h('p', { class: 'nv-sheet-note' }, 'Pick the total Richta should show, then press its button as shown. Take it before the next control: they are hidden, so do it right after the delay.'),
+      h('div', { class: 'nv-tasug' }, sug ? `Suggested: ${ms(sug.totalS)} (${press(sug.totalS)})${after}` : 'No time allowance needed right now.'),
+      h('div', { class: 'nv-tagrid' }, shown.map((x) => pick(x, sug && sug.totalS === x))),
+      below.length ? h('details', { class: 'nv-tadown' }, h('summary', {}, 'Took too much? Lower it'), h('div', { class: 'nv-tagrid' }, below.map((x) => pick(x, false)))) : null,
       h('div', { class: 'nv-sheet-btns' }, h('button', { class: 'nv-bigbtn', onclick: closeSheet }, 'Cancel')));
+  }
+  // Richta chimed at one of its hidden controls. The time is taken when the sheet opens.
+  function beepSheet() {
+    const resets = live && live.leg_style === 'control';
+    const at = live ? { tod: live.t_s, D: live.D, delta: live.delta_s } : {};
+    openSheet('Richta beeped at a control?',
+      h('p', { class: 'nv-sheet-note' }, resets
+        ? 'Logs it and starts the next leg from now, as Richta does when each control starts a new leg. The TA goes back to 0:00.'
+        : 'Logs it with what this app said, to compare with Richta. Timing carries on from the last restart.'),
+      h('div', { class: 'nv-sheet-btns' },
+        h('button', { class: 'nv-bigbtn', onclick: closeSheet }, 'Cancel'),
+        h('button', { class: 'nv-bigbtn nv-go', onclick: () => { closeSheet(); act('beep', at); } }, 'Log beep')));
   }
   function restartSheet() {
     const ed = timeEditor(live ? live.t_s : 0);
@@ -133,7 +155,7 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
     btn('Rules', 'nv-rules-btn', rulesSheet),
     limRow,
     h('div', { class: 'nv-btnrow' },
-      btn('Checkpoint', '', checkpointSheet), btn('TA', '', taSheet), btn('Restart', '', restartSheet)),
+      btn('Checkpoint', '', checkpointSheet), E.taBtn = btn('TA', '', taSheet), btn('Restart', '', restartSheet), btn('Richta ✓', '', beepSheet)),
     h('div', { class: 'nv-btnrow' },
       btn('End odo check', '', () => confirmSheet('End odometer check?', 'End check', () => act('odo_end'))),
       E.offBtn, btn('Undo last', '', () => act('undo'))));
@@ -191,6 +213,7 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
       if (ak === 'offcourse' && !off) { off = true; syncOff(); }
     }
     E.clock.textContent = fmtTod(l.t_s, U());
+    E.taBtn.textContent = l.ta_leg_s ? `TA ${ms(l.ta_leg_s)}` : 'TA';
     if (l.hold) { E.dBig.className = 'nv-dbig ' + (l.hold.go ? 'dv-good' : 'dv-info'); E.dBig.textContent = l.hold.go ? 'GO' : String(Math.max(0, Math.ceil(l.hold.in_s))); E.dWord.textContent = l.hold.go ? 'PAUSE DONE' : 'PAUSE · GO IN'; }
     else if (l.delta_s == null) { E.dBig.className = 'nv-dbig dv-muted'; E.dBig.textContent = '--'; E.dWord.textContent = ''; }
     else { const v = deltaView(l.delta_s, U()); E.dBig.className = 'nv-dbig ' + v.cls; E.dBig.textContent = v.big; E.dWord.textContent = v.word; }
