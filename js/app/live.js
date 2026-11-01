@@ -257,7 +257,10 @@ export class LiveLoop {
         const resets = !rs && this.settings.legStyle === 'control';
         if (rs) { this.ev.segEnds.push({ D, tod }); this.undo.push({ kind: 'segend' }); this.rebuild(); }
         if (resets) { this.ev.restarts.push({ D, tod }); this.undo.push({ kind: 'restart' }); this.rebuild(); }
-        this.addLog(`Richta control at ${fmtTod(tod)}${delta !== null ? `: this app said ${Math.abs(delta).toFixed(1)} s ${delta >= 0 ? 'late' : 'early'}` : ''}${rs ? `; segment done, no timing until the restart at #${rs.n}` : resets ? '; next leg timed from here, TA back to 0:00' : ''}`, { claim: true });
+        const had = delta !== null ? ` (the app had you ${Math.abs(delta).toFixed(1)} s ${delta >= 0 ? 'late' : 'early'})` : '';
+        this.addLog(rs ? `Segment done at ${fmtTod(tod)}${had}: no timing until the restart at #${rs.n}`
+          : resets ? `Checkpoint at ${fmtTod(tod)}${had}: next leg timed from here, delay time back to 0:00`
+            : `Checkpoint logged at ${fmtTod(tod)}${had}`, { claim: true });
         if (rs) this.voice?.speak(`Segment done. Timing starts again at the restart, instruction ${rs.n}.`, { key: `wait:${rs.n}`, alert: true });
         break;
       }
@@ -276,8 +279,19 @@ export class LiveLoop {
           break;
         }
         const rs = this.pendingRestart(D);
-        if (rs && (this.schedule.waitingAt(D) || (rs.D !== null && D >= rs.D - 0.1))) this.startSegment(rs, tod, D, p.via);
-        else this.action('beep', { tod, D, delta: this.state?.delta_s ?? null });
+        // Segment done but the restart is still well ahead: another checkpoint's beep, not the restart's.
+        if (rs && this.schedule.waitingAt(D) && rs.D !== null && D < rs.D - 0.3) {
+          this.addLog(`Richta beep ${(rs.D - D).toFixed(2)} mi before restart #${rs.n}: still no timing until the restart`, { claim: true });
+          break;
+        }
+        if (rs && (this.schedule.waitingAt(D) || (rs.D !== null && D >= rs.D - 0.1))) { this.startSegment(rs, tod, D, p.via); break; }
+        // Just past a restart the app already counted (by its mileage), Richta's beep is that restart's.
+        const passed = this.schedule.rows.filter((r) => (r.restart_tod || r.restart_any) && r.D !== null && r.D <= D + 0.05).at(-1);
+        if (passed && D - passed.D < 0.3 && !this.schedule.waitingAt(D)) {
+          this.addLog(`Richta beep at restart #${passed.n} (already counted): the segment is under way`, { claim: true });
+          break;
+        }
+        this.action('beep', { tod, D, delta: this.state?.delta_s ?? null });
         break;
       }
       case 'restart': this.ev.restarts.push({ D: e.D, tod: typeof p.tod === 'number' ? fmtTod(p.tod) : p.tod }); this.undo.push({ kind: 'restart' }); this.rebuild(); this.addLog(`Restart ${p.tod}`); break;
@@ -304,11 +318,25 @@ export class LiveLoop {
         }
         break;
       case 'ack': this.progress.clearAlert(); break;
+      // Back where the car left the route (the map saw it leave at engine distance p.s): the miles driven
+      // off the route come off, as with Off course / Back on course.
+      case 'rejoin': {
+        const hint = this.mapHint;
+        this.mapHint = null; this.progress.clearAlert();
+        const s0 = p.s ?? hint?.sLeave;
+        if (s0 == null || !(s0 < e.s)) { this.addLog('Back on the route'); break; }
+        this.undo.push({ kind: 'rejoin', s: e.s });
+        const extra = e.s - s0;
+        e.s = s0;
+        this.addLog(`Back on the route: ${(extra / 1609.344).toFixed(2)} mi driven off it taken off the distance`);
+        break;
+      }
       case 'undo': {
         const u = this.undo.pop();
         if (!u) break;
         if (u.kind === 'ta') this.ev.tas.pop();
         if (u.kind === 'segend' || u.kind === 'segstart') this.lastRichta = null;   // a corrected beep can be signalled again
+        if (u.kind === 'rejoin') e.s = u.s;
         if (u.kind === 'segend') this.ev.segEnds.pop();
         if (u.kind === 'segstart') {
           if (u.restarted) this.ev.restarts.pop();
@@ -323,7 +351,8 @@ export class LiveLoop {
           Object.assign(e, { theta: u.theta, Ptheta: u.Ptheta, calibrated: u.calibrated });
           this.calibratedAt = u.calibratedAt; this.progress.idx = u.idx; this.progress.done = new Set(u.done); this.calWarn = null;
         }
-        this.rebuild(); this.addLog(`Undo ${u.kind}`);
+        const UNDONE = { segend: 'segment done', segstart: 'segment start', ta: 'delay time', restart: 'restart', mark: 'MARK', checkpoint: 'checkpoint time', here: "we're here", calibrate: 'odometer check', rejoin: 'back on the route' };
+        this.rebuild(); this.addLog(`Undone: ${UNDONE[u.kind] ?? u.kind}`);
         break;
       }
       case 'clock_sync': { const ms = this.clock.syncToMinute(); this.addLog(`Clock synced to master (${(ms / 1000).toFixed(2)} s from ${this.clock.ref})`); break; }
@@ -461,6 +490,15 @@ export class LiveLoop {
     if (this.calWarn && tn < this.calWarn.until) alert = alert ?? { kind: 'calibration', text: `Odometer factor ${this.calWarn.K.toFixed(3)} looks wrong (${((this.calWarn.K - 1) * 100).toFixed(1)}% off). Tapped End odo check at the wrong place? Then Undo last.` };
     if (e.health.racebox === 'lost' && e.health.gps !== 'ok' && this.started) alert = alert ?? { kind: 'gps_lost', text: 'No GPS: distance is estimated' };
 
+    // A forgotten START: the car moving off from 30 s before its start time to 2 minutes after starts the rally.
+    if (!this.started && e.v > 3) {
+      const at = sch.perfectTimeAt(0);
+      if (at !== null && now >= at - 30 && now <= at + 120) {
+        this.action('start');
+        this.addLog('Started by itself: the car moved off at the start time');
+        this.voice?.speak('Started.', { key: `autostart:${Math.round(at)}`, alert: true });
+      }
+    }
     // Before the start: a spoken countdown to the car's start time.
     if (!this.started && this.voice) {
       const at = sch.perfectTimeAt(0), left = at === null ? null : at - now;
@@ -483,6 +521,7 @@ export class LiveLoop {
       health: { ...e.health, k: e.K, last_resync: this.lastResync ?? '' },
       speed_mph: e.v / 0.44704, stopped: e.v < 0.3, unit: st.timingUnit, started: this.started, calibrated: e.calibrated,
       recovering: !!this.recover, ta_leg_s: taLeg, ta_max_s: st.taMax_s ?? 1170, leg_style: st.legStyle ?? 'restart',
+      map_hint: this.started ? this.mapHint ?? null : null,   // set by the map: the car left a confident route guess
     };
     return this.state;
   }

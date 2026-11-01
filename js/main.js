@@ -145,6 +145,7 @@ function showHome() {
     step('3 · Clock', `Tap exactly as the master clock rolls over a minute · ${c}`, 'Sync now', null, false, () => { clock.syncToMinute(); store.set('clock', clock.save()); route(); }),
     step('4 · Drive', live?.started ? 'Rally in progress' : 'Connect the RaceBox, then go', 'Drive', '#drive', !n, null, true),
     h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
+      h('button', { onclick: () => { location.hash = '#help'; } }, 'How it works'),
       h('button', { onclick: () => { location.hash = '#diag'; } }, 'Device check'),
       h('button', { onclick: () => { location.hash = '#settings'; } }, 'Settings'),
       h('button', { onclick: () => { location.hash = '#log'; } }, 'Log'),
@@ -235,12 +236,13 @@ function showSettings() {
     onChange: (patch) => {
       S.settings = { ...S.settings, ...patch }; saveSettings(S.settings);
       voice.enabled = S.settings.voice; voice.rate = S.settings.voiceRate;
+      if ('voiceName' in patch) voice.setName(S.settings.voiceName);
       if ('theme' in patch) applyTheme();
       if (live) { live.settings = S.settings; live.rebuild(); }
     },
     actions: {
       connectRaceBox, connectObd: () => alert('OBD is not wired in this version (RaceBox + tablet GPS are).'),
-      testVoice: () => voice.speak('In point three, right at the T onto Smith Road.'),
+      testVoice: () => voice.speak('In 500 yards, turn right at the T onto Smith Road. Drive 44. 3 seconds late.'),
       testMark: () => alert(`Press the Bluetooth button now; last key seen: ${S.status.lastKey || 'none'}`),
     },
   });
@@ -255,7 +257,7 @@ function showDrive() {
   S.mapOn ??= store.get('mapOn', true);
   const mapBtn = h('button', { onclick: () => setMap(!S.mapOn) }, 'Map');
   const extras = [...(S.settings.listenRichta && S.settings.richtaSound ? [h('span', { class: 'badge good' }, '🎤 Hearing Richta')] : []),
-    ...(driverOnly ? [] : [mapBtn]), h('button', { onclick: connectRaceBox }, 'RaceBox'), h('button', { onclick: () => document.documentElement.requestFullscreen?.() }, '⤢')];
+    ...(driverOnly ? [] : [mapBtn]), h('button', { onclick: connectRaceBox }, 'Connect RaceBox'), h('button', { onclick: () => document.documentElement.requestFullscreen?.() }, 'Full screen')];
   if (!live.started && !simple) extras.unshift(startBtn);   // simple mode has its own big START
   app.append(topbar('Drive', extras));
   const grid = h('div', { class: `drive${driverOnly ? ' driver-only' : ''}` });
@@ -407,12 +409,45 @@ async function diagLines() {
   L.push(`Clock: ${clock.synced ? `synced to master (${(clock.masterMinusRef / 1000).toFixed(2)} s vs ${clock.ref})` : 'not synced to the master clock yet'}`);
   return L;
 }
+// How it works: one page for the navigator, in the order of the day.
+function showHelp() {
+  app.append(topbar('How it works'));
+  const sec = (title, ...items) => h('div', { class: 'panel' }, h('h2', {}, title), h('ul', { class: 'help-list' }, items.map((x) => h('li', {}, ...(Array.isArray(x) ? x : [x])))));
+  const b = (t) => h('b', {}, t);
+  app.append(h('div', { class: 'screen help' },
+    sec('The Drive screen',
+      [b('Top of the middle: what to do now.'), ' Read this first. It says what to tell the driver, how far ahead, and the speed.'],
+      [b('Left, big numbers:'), ' how many seconds early or late you are, and the speed to drive now. The voice says the same.'],
+      [b('Left, map:'), ' turns with the car. Green line: where you’ve been. Blue road: the road the next turn goes onto. A route guess shows how sure it is (%). Trust the instructions over the map.'],
+      [b('Middle, list:'), ' the instructions. The highlighted one is next; the time is when you should get there.']),
+    sec('The six buttons',
+      [b('RICHTA BEEPED'), ': every time Richta beeps. The app works out what it was: the start, a checkpoint, the end of a segment (it stops timing, so you can stop), or the restart gate (it starts the next segment).'],
+      [b('MARK'), ': as you pass a sign or landmark an instruction mentions (like a speed change “at the sign”), and exactly at the end of the odometer check.'],
+      [b('DELAY'), ': something you couldn’t help held you up (train, tractor, school bus, traffic). Pick the total; it tells you how many times to press TA+ in Richta. Do it right away.'],
+      [b('START'), ' (before the start): as you leave the start line. ', b('BACK ON ROUTE'), ' (after a missed turn): tap it as you make the turn you missed.'],
+      [b('UNDO'), ': takes back the last tap. Tap it if you pressed something by mistake.'],
+      [b('MORE'), ': speed limits, odometer check, off course, restart time, rules, colours, and Hear Richta.']),
+    sec('The day, in order',
+      [b('Check-in:'), ' MORE → Hear Richta: learn its beep, during Richta’s Sound Check. Sync the clock to the master clock (Home → Sync now).'],
+      [b('Start:'), ' the voice counts down to your start time. Tap START (or RICHTA BEEPED) as you leave.'],
+      [b('Odometer check:'), ' tap MARK exactly as the front wheels reach its end.'],
+      [b('Each segment:'), ' follow the line at the top and the voice. RICHTA BEEPED at every beep. DELAY after a hold-up.'],
+      [b('Segment done:'), ' “no timing now”: stop and enjoy the bridge.'],
+      [b('Restart gate:'), ' RICHTA BEEPED as Richta beeps there. Timing starts fresh.'],
+      [b('After the finish:'), ' Home → Log → Save file.']),
+    sec('If something goes wrong',
+      [b('Wrong tap:'), ' UNDO.'],
+      [b('Missed a turn:'), ' the line at the top says how to get back. Tap BACK ON ROUTE as you make the turn.'],
+      [b('The app was paused:'), ' tap the line you’re passing in the list, then We’re here. Or keep going: it fixes itself at the next turn.'],
+      [b('The map looks wrong:'), ' follow the instructions; the map is only a guess.'])));
+}
+
 function showDiag() {
   const out = h('div', { class: 'log' }, 'Checking…');
   const run = async () => { out.textContent = (await diagLines()).join('\n'); };
   app.append(topbar('Device check', [
     h('button', { onclick: run }, 'Re-check'),
-    h('button', { onclick: () => voice.speak('Three late. In point three, right at the T onto Smith Road.') }, 'Test voice'),
+    h('button', { onclick: () => voice.speak('3 seconds late. In 500 yards, turn right at the T onto Smith Road.') }, 'Test voice'),
     h('button', { onclick: async () => { await navigator.storage?.persist?.(); run(); } }, 'Keep storage'),
   ]));
   app.append(out);
@@ -427,7 +462,7 @@ function route() {
   teardown();
   applyTheme();
   const hash = location.hash || '#home';
-  ({ '#scan': showScan, '#verify': showVerify, '#settings': showSettings, '#drive': showDrive, '#log': showLog, '#paper': showPaper, '#diag': showDiag }[hash] || showHome)();
+  ({ '#scan': showScan, '#verify': showVerify, '#settings': showSettings, '#drive': showDrive, '#log': showLog, '#paper': showPaper, '#diag': showDiag, '#help': showHelp }[hash] || showHome)();
 }
 navigator.storage?.persist?.().catch(() => {});
 window.addEventListener('hashchange', route);

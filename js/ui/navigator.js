@@ -4,7 +4,7 @@
 //   -> { update, setRoute, setLog, toast, setMode, destroy }
 import { h, clear, fmtOm, actionSummary, actionIcon, explainEl, digestEls } from './dom.js';
 import { glossaryOf } from '../core/extract.js';
-import { richtaLadder, taPresses, restartNext } from '../core/timing.js';
+import { richtaLadder, taPresses } from '../core/timing.js';
 import { deltaView, fmtCountdown } from './driver.js';
 import { coach } from '../app/coach.js';
 
@@ -94,30 +94,13 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
     const below = [0, ...ladder].filter((x) => x < cur);
     const pick = (x, go) => h('button', { class: 'nv-bigbtn nv-tabtn' + (go ? ' nv-go' : ''), onclick: () => { closeSheet(); act('ta', { total: x }); } },
       h('b', {}, ms(x)), h('small', {}, press(x)));
-    const after = !sug ? '' : sug.residualS < -1 ? `, then lose ${Math.round(-sug.residualS)} s (ease off, or wait safely off the road)` : sug.residualS > 1 ? `, then make up ${Math.round(sug.residualS)} s` : '';
-    openSheet(`Time allowance · this leg ${ms(cur)}`,
-      h('p', { class: 'nv-sheet-note' }, 'Pick the total Richta should show, then press its button as shown. Take it before the next control: they are hidden, so do it right after the delay.'),
-      h('div', { class: 'nv-tasug' }, sug ? `Suggested: ${ms(sug.totalS)} (${press(sug.totalS)})${after}` : 'No time allowance needed right now.'),
+    const after = !sug ? '' : sug.residualS < -1 ? ` Then lose ${Math.round(-sug.residualS)} s: ease off, or wait safely off the road.` : sug.residualS > 1 ? ` Then make up ${Math.round(sug.residualS)} s.` : '';
+    openSheet(`Delay: add time (Richta calls it TA)${cur ? ` · so far ${ms(cur)}` : ''}`,
+      h('p', { class: 'nv-sheet-note' }, 'Held up by something you couldn’t help (train, tractor, school bus, traffic)? Tap the green total, then press TA+ in Richta the number of times shown. Do it now: checkpoints are hidden, and time added after one is too late.'),
+      h('div', { class: 'nv-tasug' }, sug ? `Suggested: ${ms(sug.totalS)} total: in Richta, ${press(sug.totalS).replace('Richta ', '')}.${after}` : 'You aren’t late enough to need this right now.'),
       h('div', { class: 'nv-tagrid' }, shown.map((x) => pick(x, sug && sug.totalS === x))),
       below.length ? h('details', { class: 'nv-tadown' }, h('summary', {}, 'Took too much? Lower it'), h('div', { class: 'nv-tagrid' }, below.map((x) => pick(x, false)))) : null,
       h('div', { class: 'nv-sheet-btns' }, h('button', { class: 'nv-bigbtn', onclick: closeSheet }, 'Cancel')));
-  }
-  // Richta chimed at one of its hidden controls. The time is taken when the sheet opens.
-  function beepSheet() {
-    const resets = live && live.leg_style === 'control';
-    const at = live ? { tod: live.t_s, D: live.D, delta: live.delta_s } : {};
-    // The time and place are taken now, when the sheet opens, so there's no hurry to confirm.
-    const i = ins.findIndex((r) => r.n === (live && live.next ? live.next.n : null));
-    const rs = i >= 0 ? restartNext(ins, i - 1) : null;
-    openSheet('Richta beeped at a checkpoint?',
-      h('p', { class: 'nv-sheet-note' }, rs
-        ? `Ends this segment: no timing until you cross the restart at #${rs.n}, then it starts fresh. Time taken when you tapped.`
-        : resets
-          ? 'Logs it and starts the next leg from now, as Richta does when each control starts a new leg. The TA goes back to 0:00.'
-          : 'Logs it with what this app said, to compare with Richta. Timing carries on from the last restart.'),
-      h('div', { class: 'nv-sheet-btns' },
-        h('button', { class: 'nv-bigbtn', onclick: closeSheet }, 'Cancel'),
-        h('button', { class: 'nv-bigbtn nv-go', onclick: () => { closeSheet(); act('beep', at); } }, 'Log beep')));
   }
   function restartSheet() {
     const ed = timeEditor(live ? live.t_s : 0);
@@ -163,10 +146,10 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
     btn('MARK', 'nv-mark', () => act('mark')),
     limRow,
     h('div', { class: 'nv-actions' },
-      btn('Checkpoint beep', '', beepSheet), E.taBtn = btn('TA', '', taSheet), btn('Undo last', '', () => act('undo')),
+      btn('RICHTA BEEPED', 'nv-go', () => act('richta', { via: 'tap' })), E.taBtn = btn('TA', '', taSheet), btn('Undo last', '', () => act('undo')),
       btn('Staffed control', '', checkpointSheet), btn('Restart time', '', restartSheet), E.offBtn,
       btn('End odo check', '', () => confirmSheet('End odometer check?', 'End check', () => act('odo_end'))),
-      btn('Rules', 'nv-rules-btn', rulesSheet)));
+      btn('Rules', 'nv-rules-btn', rulesSheet), btn('More', '', () => moreSheet())));
 
   E.dots = {};
   const dot = (k, label) => { E.dots[k] = h('i', { class: 'nv-dot' }); return h('span', { class: 'nv-h' }, E.dots[k], label); };
@@ -190,6 +173,7 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
     if (!live || !live.started) act('start');
     else if (live.alert && live.alert.kind === 'missed_turn') act('here', { n: live.alert.n });
     else if (live.alert && live.alert.kind === 'offcourse') { off = false; syncOff(); act('offcourse', { on: false }); }
+    else if (live.map_hint && live.map_hint.kind === 'offroute') act('rejoin', {});
   }
   E.coachTitle = h('div', { class: 'nv-coach-title' }, '');
   E.coachText = h('div', { class: 'nv-coach-text' }, '');
@@ -280,7 +264,7 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
     E.stats.speed.textContent = l.speed_mph == null ? '--' : l.speed_mph.toFixed(1);
     E.stats.cast.textContent = f(l.cast_mph);
     E.stats.target.textContent = f(l.target_mph);
-    E.stats.limit.textContent = l.limit_mph == null ? '?' : Math.round(l.limit_mph) + (l.limit_src === 'default' ? '*' : '');
+    E.stats.limit.textContent = l.limit_mph == null ? '–' : Math.round(l.limit_mph) + (l.limit_src === 'default' ? '*' : '');
     const hh = l.health || {};
     for (const k of ['racebox', 'obd', 'gps']) E.dots[k].className = 'nv-dot nv-' + (hh[k] || 'off');
     E.k.textContent = 'k ' + (hh.k != null ? hh.k.toFixed(4) : '--');
@@ -291,7 +275,7 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
     if (E.coachTitle.textContent !== c.title) E.coachTitle.textContent = c.title;
     if (E.coachText.textContent !== c.text) E.coachText.textContent = c.text;
     E.coach.className = `nv-coach nv-tone-${c.tone}`;
-    const ctx = !l.started ? ['START', 'as you leave the start line'] : l.alert && (l.alert.kind === 'missed_turn' || l.alert.kind === 'offcourse') ? ['BACK ON ROUTE', 'tap as you rejoin the route'] : null;
+    const ctx = !l.started ? ['START', 'as you leave the start line'] : (l.alert && (l.alert.kind === 'missed_turn' || l.alert.kind === 'offcourse')) || (l.map_hint && l.map_hint.kind === 'offroute') ? ['BACK ON ROUTE', 'tap as you rejoin the route'] : null;
     E.ctxBtn.style.visibility = ctx ? '' : 'hidden';
     if (ctx && E.ctxBtn.firstChild.textContent !== ctx[0]) { E.ctxBtn.firstChild.textContent = ctx[0]; E.ctxBtn.lastChild.textContent = ctx[1]; }
     E.richtaBtn.classList.toggle('nv-hint', c.act === 'richta');

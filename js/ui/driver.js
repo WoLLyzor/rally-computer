@@ -73,7 +73,7 @@ export function mountDriver(container, { unit = 's' } = {}) {
     }
 
     el.target.textContent = live.target_mph != null ? Math.round(live.target_mph) : '--';
-    el.limit.textContent = 'limit ' + (live.limit_mph != null ? Math.round(live.limit_mph) : '?');
+    el.limit.textContent = live.limit_mph != null ? `limit ${Math.round(live.limit_mph)}` : '';
     el.atlim.hidden = !(live.target_mph != null && live.target_mph === live.limit_mph);
 
     const nx = live.next;

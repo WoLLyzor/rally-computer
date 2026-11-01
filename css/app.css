@@ -1,12 +1,12 @@
 :root{--bg:#0b0d10;--panel:#151a20;--text:#e8eaed;--muted:#9aa4ae;--good:#3ddc84;--watch:#f5b942;--info:#7cc4ff;--line:#2a323c;--r:14px;
-  --btn:#1d242c;--on-good:#06210f;--on-watch:#1a1200;--sel:#10222f;--mapbg:#0e1217;--road:#5f6a76;--road-major:#8b97a4;--road-minor:#434b55;--maplabel:#c9d1d9;--topbar:var(--panel)}
+  --btn:#1d242c;--on-good:#06210f;--on-watch:#1a1200;--sel:#10222f;--mapbg:#0e1217;--road:#5f6a76;--road-major:#8b97a4;--road-minor:#434b55;--maplabel:#c9d1d9;--topbar:var(--panel);--route:#ff6bd6}
 /* Themes (Settings, or MORE on the Drive screen): Daylight for bright sun, High contrast, Covered bridge. */
 :root[data-theme=day]{--bg:#f3f5f7;--panel:#ffffff;--text:#0d1117;--muted:#46515c;--good:#0e7a34;--watch:#b45309;--info:#0b5fb5;--line:#b9c3cd;
-  --btn:#e6ebf0;--on-good:#ffffff;--on-watch:#ffffff;--sel:#d6e8fb;--mapbg:#eef1f4;--road:#97a3af;--road-major:#55626f;--road-minor:#c6ced6;--maplabel:#0d1117}
+  --btn:#e6ebf0;--on-good:#ffffff;--on-watch:#ffffff;--sel:#d6e8fb;--mapbg:#eef1f4;--road:#97a3af;--road-major:#55626f;--road-minor:#c6ced6;--maplabel:#0d1117;--route:#b3127e}
 :root[data-theme=contrast]{--bg:#000;--panel:#000;--text:#fff;--muted:#f2f2f2;--good:#00ff6a;--watch:#ffd000;--info:#00e1ff;--line:#fff;
-  --btn:#000;--on-good:#000;--on-watch:#000;--sel:#00394d;--mapbg:#000;--road:#bdbdbd;--road-major:#fff;--road-minor:#7a7a7a;--maplabel:#fff}
+  --btn:#000;--on-good:#000;--on-watch:#000;--sel:#00394d;--mapbg:#000;--road:#bdbdbd;--road-major:#fff;--road-minor:#7a7a7a;--maplabel:#fff;--route:#ff3df2}
 :root[data-theme=bridge]{--bg:#1d1410;--panel:#2b1d16;--text:#fbeedd;--muted:#d9bf9f;--good:#a3cc52;--watch:#ff9433;--info:#f6c453;--line:#5c3d2d;
-  --btn:#3a261d;--on-good:#17210a;--on-watch:#2a1400;--sel:#4d2b1d;--mapbg:#21170f;--road:#8c6c53;--road-major:#d2ab80;--road-minor:#5d4435;--maplabel:#fbeedd;
+  --btn:#3a261d;--on-good:#17210a;--on-watch:#2a1400;--sel:#4d2b1d;--mapbg:#21170f;--road:#8c6c53;--road-major:#d2ab80;--road-minor:#5d4435;--maplabel:#fbeedd;--route:#ff7aa8;
   --topbar:linear-gradient(90deg,#6b1d13 0%,#8e2f17 35%,#b7601c 68%,#d39a30 100%)}
 :root[data-theme=bridge] .topbar{background:var(--topbar);border-bottom-color:#d39a30}
 :root[data-theme=bridge] .topbar b{color:#fff4e2;text-shadow:0 1px 2px #3a0d06}
@@ -131,3 +131,6 @@ label{display:block;color:var(--muted);margin:10px 0 4px;font-size:.9rem}
 .times td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
 .times tr.times-first td{border-top:2px solid var(--info)}
 @media print{body{background:#fff;color:#000}.topbar{display:none}.times-start,.times-end,.times .muted{color:#000}.times th,.times td{border-color:#999}}
+.help .panel h2{margin-top:0}
+.help-list{margin:0;padding-left:1.2em}
+.help-list li{margin:6px 0;line-height:1.45}

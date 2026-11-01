@@ -16,19 +16,20 @@ const say = (ins) => (explain(ins).text || ins.text || '').replace(/\s+/g, ' ').
 // Coming back the other way, the turn is on the other side.
 const BACK = { L: 'turn RIGHT', R: 'turn LEFT', BL: 'bear RIGHT', BR: 'bear LEFT', S: 'go straight' };
 
-// "Speed up to 44 (now 42). 4 s late."
-export function paceLine(st) {
+// "Speed up to 44 (now 42). 4 s late." Close to a turn: "Slow down for the turn."
+export function paceLine(st, { turnSoon = false } = {}) {
   const out = [];
   const tgt = st.target_mph != null ? Math.round(st.target_mph) : null, v = st.speed_mph != null ? Math.round(st.speed_mph) : null;
-  if (tgt !== null) {
+  if (turnSoon && v !== null && v >= 3) out.push('Slow down for the turn.');
+  else if (tgt !== null) {
     if (v === null || v < 3) out.push(`Drive ${tgt} mph.`);
     else if (tgt - v >= 2) out.push(`Speed up to ${tgt} (now ${v}).`);
     else if (v - tgt >= 2) out.push(`Slow to ${tgt} (now ${v}).`);
     else out.push(`Hold ${tgt} mph.`);
   }
   if (st.delta_s != null) {
-    const a = Math.abs(st.delta_s);
-    out.push(a < 1.5 ? 'On time.' : `${Math.round(a)} s ${st.delta_s > 0 ? 'late' : 'early'}.`);
+    const n = Math.round(Math.abs(st.delta_s));   // the same rounding as the big number
+    out.push(n === 0 ? 'On time.' : `${n} s ${st.delta_s > 0 ? 'late' : 'early'}.`);
   }
   return out.join(' ');
 }
@@ -52,10 +53,15 @@ export function coach(st, ctx = {}) {
     return { title: `Missed turn? #${a.n}`, tone: 'watch', act: 'back',
       text: `${r ? cap(say(r)) : 'The turn'}${back ? ` was ${back} back` : ''}. If you missed it: turn around when safe, drive back${back ? ` ${back}` : ''}, then ${turn}. Tap BACK ON ROUTE as you make that turn.` };
   }
+  const mh = !a ? st.map_hint : null;
+  if (mh?.kind === 'offroute') {
+    return { title: 'Off the route?', tone: 'watch', act: 'back',
+      text: `The map’s route guess (${mh.pct}% sure) goes along ${mh.routeRoad || 'another road'}${mh.road ? `; you’re on ${mh.road}` : ''}. Check the last instruction. If you turned wrong: turn around when safe, go back to ${mh.routeRoad || 'the pink line'}, and tap BACK ON ROUTE there.` };
+  }
   if (a?.kind === 'offcourse') return { title: 'Off course', tone: 'watch', act: 'back', text: 'Go back the way you came (the green line on the map) to where you left the route. Tap BACK ON ROUTE when you’re there.' };
   if (a?.kind === 'recovering') return { title: 'The app was paused', tone: 'watch', act: null, text: 'It fixes the distance by itself at the next turn. To fix it now: tap the line you’re passing in the list, then WE’RE HERE.' };
   if (a?.kind === 'calibration') return { title: 'Odometer check looks wrong', tone: 'watch', act: null, text: 'If MARK was tapped at the wrong place, tap UNDO.' };
-  if (a?.kind === 'gps_lost') return { title: 'No GPS signal', tone: 'watch', act: null, text: 'Distance is being estimated. Check that the RaceBox is on and connected (top bar: RaceBox).' };
+  if (a?.kind === 'gps_lost') return { title: 'No GPS signal', tone: 'watch', act: null, text: 'Distance is being estimated. Check that the RaceBox is on and connected (top bar: Connect RaceBox).' };
 
   if (st.hold) {
     return st.hold.go ? { title: 'GO now', text: 'Pause done. Tell the driver to go.', tone: 'good', act: null }
@@ -76,7 +82,7 @@ export function coach(st, ctx = {}) {
 
   const nx = st.next, ins = nx?.ins;
   if (!nx || !ins) return { title: 'No more instructions', text: 'After the finish: Home, then Log, then Save file.', tone: 'good', act: null };
-  const pace = paceLine(st);
+  const pace = paceLine(st, { turnSoon: ins.action === 'turn' && nx.to_mi != null && nx.to_mi < 0.12 });
   if (!st.calibrated && ins.odo_check_end) {
     return { title: `Odometer check ends ${nx.to_mi != null ? `in ${distWords(Math.max(0, nx.to_mi))}` : 'ahead'}`, tone: 'watch', act: 'mark',
       text: `Tap MARK exactly as the front wheels reach it: ${say(ins)}. ${pace}`.trim() };

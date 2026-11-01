@@ -4,17 +4,24 @@
 // the car to a road, follows the main road, and makes each turn of the instructions at the junction that
 // best fits its mileage, direction and road name.
 //
-// Confidence of one turn (0…1) is the product of
-//   mileage    1 − 0.6·(err/window)², window ±max(60 m, 4% of the leg since the last turn or the car)
-//   angle      1 inside the direction's range (R/L 45–135°, BR/BL 12–70°, S ±25°; −0.15 at its edges),
-//              fading to 0 by 25° outside; BR/BL that isn't the right-/leftmost branch of the fork ×0.5
-//   name       onto (or, softer, an "at" sign's text) is the map's name → 1, close spelling 0.9,
-//              road unnamed on the map 0.85, another name 0.5; no onto → 1
-//   kind       service road 0.4, track 0.35, motorway 0.3, trunk 0.7 (1 when the name matches);
-//              cue T where the road goes on straight ×0.5; cue Y with no fork ×0.6
-//   ambiguity  runner-up (another junction or branch) at ratio q of the best: ×(1 − 0.55·(q − 0.35)/0.65)
-// The line's conf multiplies the turns' and ×0.85 per ambiguous fork of the main road on the way, so an
-// early wrong turn spoils everything after it. A turn no junction fits stops the line at its mileage ×0.4.
+// Each turn is looked for at the junctions on the main road within ±max(60 m, 4% of its leg) of its mileage;
+// the leg runs from the previous turn projected, or for the first turn from the previous turn row (where the
+// app last re-synced D), as the car's own mileage drifts since then. Confidence of one turn (0…1), product of
+//   mileage    1 − 0.6·(err/window)³: flat near the mileage, 0.4 at the window's edge
+//   angle      R/L 1 at 55–125° (0.85 at 45° and 140°, 0 at 20° and 165°); BR/BL 1 at 20–55° (0 at −5°
+//              and 95°), 0.9 for the right/left way of a fork, ×0.5 if another way of the fork is further
+//              that side ("L at Y" counts as BL); S 1 within ±12° (0 at ±40°)
+//   name       onto (else, softer, an "at" sign's text) is the map's name → 1, close spelling 0.9, road
+//              unnamed on the map 0.85 (×0.7 more if a road of that name is in the window), another name
+//              0.5; no onto → 1
+//   kind       service road 0.4, track 0.35, motorway 0.3, trunk 0.7 (1 when the name matches); cue T where
+//              the road goes on straight ×0.5; cue Y with no fork ×0.6; STOP/yield/signal where the car's
+//              road goes on straight and meets no bigger road ×0.75
+//   ambiguity  runner-up (another junction, or another way out) at ratio q of the best score:
+//              ×(1 − 0.55·(q − 0.35)/0.65) for q > 0.35, so a tie halves it
+// The line's conf multiplies its turns' and ×0.85 per ambiguous fork of the main road passed on the way (not
+// in the short tail after the last turn), so an early wrong turn spoils everything after it. A turn found
+// only out to twice its window ×0.6; a turn no junction fits ends the line at its mileage ×0.4.
 
 import { roadKey, roadKeys, nearestRoad } from './mapview.js';
 
@@ -25,6 +32,7 @@ const TAIL_M = 250;       // line drawn past the last turn projected
 const LOOK_M = 60;        // a turn up to 60 m behind the car's mileage may not have been made yet
 const FORK = 0.85;
 const UNRESOLVED = 0.4;
+const WIDE = 0.6;         // the turn found only outside its window (searched to twice its width)
 const MIN_SCORE = 0.12;   // a junction scoring lower doesn't count as the turn
 
 const norm = (a) => ((a % 360) + 540) % 360 - 180;   // −180…180, + = right
@@ -61,11 +69,12 @@ export function buildGraph(map) {
     for (let k = 2; k < n; k += 2) L += Math.hypot(xy[k] - xy[k - 2], xy[k + 1] - xy[k - 1]);
     len[i] = L; hA[i] = leaving(xy, 1); hB[i] = leaving(xy, -1);
   }
-  const nV = vx.length, start = new Int32Array(nV + 1);
-  for (let i = 0; i < nR; i++) { start[ra[i] + 1]++; start[rb[i] + 1]++; }
+  const nV = vx.length, start = new Int32Array(nV + 1), linked = (i) => ra[i] !== rb[i] || len[i] >= 1;   // not a dot
+  for (let i = 0; i < nR; i++) if (linked(i)) { start[ra[i] + 1]++; start[rb[i] + 1]++; }
   for (let v = 0; v < nV; v++) start[v + 1] += start[v];
   const fill = start.slice(0, nV), hRoad = new Int32Array(2 * nR), hFwd = new Uint8Array(2 * nR);
   for (let i = 0; i < nR; i++) {
+    if (!linked(i)) continue;
     let p = fill[ra[i]]++; hRoad[p] = i; hFwd[p] = 1;
     p = fill[rb[i]]++; hRoad[p] = i; hFwd[p] = 0;
   }
@@ -98,8 +107,9 @@ function mainRoad(g, c) {
   const byBend = (p, q) => p.ad - q.ad;
   const same = bs.filter((b) => b.ad <= 120 && shares(roads[b.road], c.ref)).sort(byBend);
   if (same.length) {
-    const pick = same[0];
-    const amb = (same.length > 1 && same[1].ad - pick.ad < 25) || (pick.ad > 45 && bs.some((b) => !same.includes(b) && b.c <= 6 && b.ad < 20));
+    const pick = same[0], rival = same[1];
+    const split = rival && rival.ad <= 30;   // carriageways of a divided road: either way is the road
+    const amb = (rival && rival.ad - pick.ad < 25 && !split) || (pick.ad > 45 && bs.some((b) => !same.includes(b) && b.c <= 6 && b.ad < 20));
     return { ...pick, amb };
   }
   const inC = roads[c.road].c, pool = bs.filter((b) => b.c <= Math.max(6, inC)).sort(byBend);
@@ -211,7 +221,8 @@ function junctionBehind(g, road, f, d, limit) {
 // Score every way to make `row`'s turn: branches of the junctions on the main road within the window, plus
 // (first turn only) "already made" at the junction just behind the car. Returns the best with its conf.
 function pickTurn(g, steps, row, E, W, maxM, behind) {
-  const roads = g.map.roads, dir = row.dir, { key, soft } = turnName(row);
+  const roads = g.map.roads, { key, soft } = turnName(row);
+  const dir = row.cue === 'Y' && (row.dir === 'L' || row.dir === 'R') ? `B${row.dir}` : row.dir;   // "L at Y": the left way
   const cands = [];
   for (let j = 0; j < steps.length; j++) {
     const st = steps[j];
@@ -223,7 +234,7 @@ function pickTurn(g, steps, row, E, W, maxM, behind) {
     const minor = !straight || bs.some((b) => b.c < roads[st.road].c);
     const fork = bs.filter((o) => o.ad <= 70 && o.c <= 6);
     for (const b of bs) {
-      let fit = angleFit(dir, b.a);
+      let fit = Math.max(angleFit(dir, b.a), angleFit(row.dir, b.a));
       if (dir === 'BR' || dir === 'BL') {   // the right-/leftmost way of a fork
         const side = dir === 'BR' ? 1 : -1;
         if (fork.some((o) => o !== b && o.a * side > b.a * side)) fit *= 0.5;
@@ -236,7 +247,7 @@ function pickTurn(g, steps, row, E, W, maxM, behind) {
       if (row.cue === 'Y' && !bs.some((o) => o !== b && o.ad <= 70)) kind *= 0.6;
       if ((row.cue === 'stop' || row.cue === 'yield' || row.cue === 'signal') && !minor) kind *= 0.75;
       const e = Math.abs(st.s - E) / W;
-      cands.push({ j, b, v: st.v, head: out(g, b.road, b.fwd), score: fit * name * kind * (1 - 0.6 * e * e * e) });
+      cands.push({ j, b, v: st.v, head: out(g, b.road, b.fwd), score: fit * name * kind * (1 - 0.6 * e * e * e), unnamed: !roadKeys(roads[b.road]).length, exact: name === 1 && !!key });
     }
   }
   if (behind) {
@@ -245,7 +256,8 @@ function pickTurn(g, steps, row, E, W, maxM, behind) {
     for (let p = g.start[jb.v]; p < g.start[jb.v + 1]; p++) {
       const r = g.hRoad[p], f = g.hFwd[p] === 1;
       if (r === jb.road && f === jb.fwd) continue;
-      fit = Math.max(fit, angleFit(dir, norm(h - out(g, r, f) - 180)));
+      const a = norm(h - out(g, r, f) - 180);
+      fit = Math.max(fit, angleFit(dir, a), angleFit(row.dir, a));
     }
     const e = Math.abs(-jb.d - E) / W;
     if (fit > 0 && e <= 1) {
@@ -255,6 +267,8 @@ function pickTurn(g, steps, row, E, W, maxM, behind) {
     }
   }
   if (!cands.length) return null;
+  // A road of the turn's name is here, so the map names roads here: an unnamed one is less likely meant.
+  if (cands.some((c) => c.exact)) for (const c of cands) if (c.unnamed) c.score *= 0.7;
   cands.sort((p, q) => q.score - p.score);
   const best = cands[0];
   if (best.score < MIN_SCORE) return null;
@@ -270,11 +284,12 @@ function pickTurn(g, steps, row, E, W, maxM, behind) {
 // without mileage that may be behind the car counts as made once the car is on its road.
 function turnsAhead(rows, D, look, carKeys) {
   const list = [];
-  let ahead = false;
+  let ahead = false, prev = 0;   // prev: the last turn's mileage (where the app last re-synced D)
   for (let i = 0; i < rows.length; i++) {
-    const r = rows[i], known = Number.isFinite(r.D);
+    const r = rows[i], known = Number.isFinite(r.D), before = prev;
     if (known && r.D > D) ahead = true;
     if (r.action !== 'turn' || !r.dir) continue;
+    if (known) prev = r.D;
     if (!known) {
       if (!ahead) {
         const next = rows.slice(i + 1).find((q) => Number.isFinite(q.D));
@@ -286,7 +301,7 @@ function turnsAhead(rows, D, look, carKeys) {
       break;
     }
     if (r.D <= D - look) continue;
-    list.push({ row: r, stop: r.dir === 'U' });
+    list.push({ row: r, stop: r.dir === 'U', prev: before });
     if (r.dir === 'U') break;
   }
   return list;
@@ -304,11 +319,13 @@ function project(g, snap, x, y, fwd, o) {
   let c = { v: fwd ? g.rb[i] : g.ra[i], road: i, fwd, hin: arrive(g, i, fwd), ref: carKeys };
   const turns = [];
   let conf = 1, anchorS = 0, anchorD = o.D, tail = true;
-  for (const { row, stop } of turnsAhead(o.rows, o.D, LOOK_M / o.mPerMile, carKeys)) {
+  for (const { row, stop, prev } of turnsAhead(o.rows, o.D, LOOK_M / o.mPerMile, carKeys)) {
     if (turns.length >= o.maxTurns || !Number.isFinite(row.D)) break;
     let E = anchorS + (row.D - anchorD) * o.mPerMile;
     if (turns.length && E < anchorS) E = anchorS;
-    const W = Math.max(60, 0.04 * Math.abs(E - anchorS));
+    // The car's own mileage drifts from the last turn (its re-sync), so the first turn's window spans its whole leg.
+    const leg = anchorS === 0 && !turns.length ? Math.max(E, (row.D - prev) * o.mPerMile) : E - anchorS;
+    const W = Math.max(60, 0.04 * Math.abs(leg));
     if (stop) {   // U-turn: the line ends where it is
       const s = Math.max(0, Math.min(E, o.maxM));
       conf *= forksBefore(walk(g, P, c, s), s); cutAt(P, s); tail = false;
@@ -319,10 +336,16 @@ function project(g, snap, x, y, fwd, o) {
       break;
     }
     const n0 = P.pts.length;
-    const steps = walk(g, P, c, E + W);
+    let steps = walk(g, P, c, E + W);
     const behind = !turns.length && E - W < 0 ? junctionBehind(g, i, fwd, back, W - E) : null;
     if (behind) behind.car = i;
-    const pick = pickTurn(g, steps, row, E, W, o.maxM, behind);
+    let pick = pickTurn(g, steps, row, E, W, o.maxM, behind);
+    if (!pick && (turns.length || E >= W)) {   // nothing fits in the window: look twice as far, trusting it less
+      cutCount(P, n0);
+      steps = walk(g, P, c, E + 2 * W);
+      pick = pickTurn(g, steps, row, E, 2 * W, o.maxM, null);
+      if (pick) pick.conf *= WIDE;
+    }
     if (!pick || pick.behind) {
       cutCount(P, n0);
       if (pick) { conf *= pick.amb; anchorS = -pick.d; anchorD = row.D; continue; }   // made already
@@ -340,8 +363,8 @@ function project(g, snap, x, y, fwd, o) {
       angle: Math.round(pick.b.a), road: to, margin: pick.margin, path_conf: conf });
     anchorS = st.s; anchorD = row.D;
   }
-  if (tail) {
-    const s = Math.min(o.maxM, plen(P) + TAIL_M);
+  if (tail) {   // a short way past the last turn (or the car), along the main road
+    const s = Math.min(o.maxM, (turns.length ? turns[turns.length - 1].dist_m : 0) + TAIL_M);
     walk(g, P, c, s); cutAt(P, s);
   }
   return { path: P.pts, turns, conf, road: roads[i].name };

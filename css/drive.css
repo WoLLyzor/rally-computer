@@ -182,3 +182,8 @@
 .nv-more-lim .nv-lim{min-height:54px}
 .nv-sheet .nv-sheet-title{margin:0 0 8px}
 .nv-sheet .nv-sheet-btns{margin-top:10px}
+/* The route guess: how sure the line is. */
+.mp-guess{position:absolute;left:8px;top:66px;background:var(--panel);border:2px solid var(--line);border-radius:999px;padding:4px 14px;font-weight:800;font-size:1rem;white-space:nowrap;z-index:2}
+.mp-g-good{border-color:var(--good);color:var(--good)}
+.mp-g-watch{border-color:var(--watch);color:var(--watch)}
+.mp-g-low{color:var(--muted)}

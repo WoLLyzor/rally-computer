@@ -39,6 +39,7 @@ export class Voice {
       speechSynthesis.addEventListener?.('voiceschanged', pick);
     }
   }
+  setName(name) { this.name = name; if (this.ok) this.voice = pickVoice(speechSynthesis.getVoices(), name); }
   speak(text, { key = null, alert = false } = {}) {
     if (key && this.said.has(key)) return false;
     if (key) this.said.add(key);

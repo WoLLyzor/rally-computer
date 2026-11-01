@@ -90,6 +90,15 @@ export function mountSettings(container, opts) {
         h('label', { class: 'sw', style: { color: 'var(--text)' } },
           h('input', { type: 'checkbox', checked: !!settings.voice, onchange: e => set('voice', e.target.checked) }), 'Speak prompts aloud'),
         range('voiceRate', 'Voice speed', 0.8, 1.4, 0.1),
+        (() => {
+          // The voices installed on this tablet that work offline; the app picks the clearest one by itself.
+          const vs = typeof speechSynthesis !== 'undefined' ? speechSynthesis.getVoices().filter((v) => /^en[-_]US/i.test(v.lang) && v.localService !== false) : [];
+          if (!vs.length) return null;
+          const sel = h('select', { onchange: (e) => set('voiceName', e.target.value) },
+            h('option', { value: '' }, 'Automatic (clearest available)'),
+            vs.map((v) => h('option', { value: v.name, selected: settings.voiceName === v.name }, v.name)));
+          return h('div', null, h('label', null, 'Voice'), sel);
+        })(),
         h('div', { class: 'row', style: { marginTop: '10px' } }, h('button', { class: 'btn-info', onclick: act('testVoice') }, 'Test voice'))),
       h('div', { class: 'panel' },
         h('h2', null, 'Sensors'),

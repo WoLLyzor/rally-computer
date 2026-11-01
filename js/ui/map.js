@@ -5,10 +5,15 @@
 import { h } from './dom.js';
 import { decodeMap, roadKey, roadKeys, nearestRoad } from '../core/mapview.js';
 
-let MAP = null, LOADING = null;   // decoded once, shared by every mount
+let MAP = null, GRAPH = null, projectRoute = null, LOADING = null;   // decoded once, shared by every mount
 export function loadMap(url = 'map/roads.json') {
   LOADING ??= fetch(url).then((r) => { if (!r.ok) throw new Error(`map ${r.status}`); return r.json(); })
-    .then((doc) => (MAP = decodeMap(doc)))
+    .then(async (doc) => {
+      MAP = decodeMap(doc);
+      // The route guess loads on its own: if it fails, the map (and the app) work without it.
+      try { const rp = await import('../core/routeproj.js'); GRAPH = rp.buildGraph(MAP); projectRoute = rp.projectRoute; } catch (e) { console.warn('route guess off', e); }
+      return MAP;
+    })
     .catch((err) => { LOADING = null; throw err; });
   return LOADING;
 }
@@ -28,12 +33,47 @@ export function mountMap(container) {
   const road = h('div', { class: 'mp-road' });
   const speed = h('div', { class: 'mp-speed' });
   const btn = (label, aria, fn) => h('button', { class: 'mp-btn', 'aria-label': aria, onclick: fn }, label);
-  const root = h('div', { class: 'mp-root' }, canvas, speed,
+  const guess = h('div', { class: 'mp-guess', hidden: true });
+  const root = h('div', { class: 'mp-root' }, canvas, speed, guess,
     h('div', { class: 'mp-tools' }, btn('+', 'Zoom in', () => zoom(0.7)), btn('−', 'Zoom out', () => zoom(1.45))),
     road, status, h('div', { class: 'mp-attr' }, '© OpenStreetMap contributors'));
   container.append(root);
   // bias: the crew's zoom on top of the automatic one; rot: the drawn heading, eased toward the car's.
-  let bias = 1, mpp = null, last = null, drawnAt = 0, heading = null, rot = null;
+  let bias = 1, mpp = null, last = null, drawnAt = 0, heading = null, rot = null, proj = null, projAt = 0;
+
+  // Wrong turn? When a confident route guess (85%+ to the next turn) goes one way and the car clearly another
+  // for 6 s while moving, the navigator is asked (never told): live.mapHint, shown by the coach line, with
+  // the engine distance where the car left the line so BACK ON ROUTE can take the extra miles off.
+  let good = null, offSince = null;
+  const distToPath = (path, x, y) => {
+    let best = Infinity;
+    for (let j = 0; j + 1 < path.length; j++) {
+      const [ax, ay] = path[j], [bx, by] = path[j + 1], dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy;
+      const t = L2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / L2)) : 0;
+      best = Math.min(best, Math.hypot(x - ax - t * dx, y - ay - t * dy));
+    }
+    return best;
+  };
+  function checkOffRoute(x, y, v, now, st, live) {
+    const pct = proj ? Math.round(100 * (proj.turns?.[0]?.conf ?? proj.conf)) : 0;
+    const hint = live.mapHint;
+    if (hint && (st.next?.n !== hint.nextN || now - hint.at > 45000)) live.mapHint = null;   // the app moved on, or it's stale
+    if (!good) { if (proj && pct >= 85) good = { path: proj.path, pct, road: proj.road, nextN: st.next?.n }; return; }
+    const d = distToPath(good.path, x, y);
+    if (d <= 25) {
+      offSince = null;
+      if (live.mapHint?.kind === 'offroute') live.mapHint = null;
+      good.sOn = live.engine?.s ?? null;
+      if (proj && pct >= 85) Object.assign(good, { path: proj.path, pct, road: proj.road, nextN: st.next?.n });
+      else if (st.next?.n !== good.nextN) good = null;
+    } else if (d > 50 && v > 4) {
+      offSince ??= now;
+      if (now - offSince > 6000 && !live.mapHint) {
+        const near = nearestRoad(MAP, x, y, heading);
+        live.mapHint = { kind: 'offroute', pct: good.pct, routeRoad: good.road ?? '', road: near ? MAP.roads[near.i].name : '', sLeave: good.sOn ?? null, at: now, nextN: st.next?.n };
+      }
+    } else offSince = null;
+  }
   const zoom = (f) => { bias = Math.max(0.35, Math.min(3, bias * f)); draw(true); };
   loadMap().then(() => draw(true)).catch(() => { status.hidden = false; status.textContent = 'The map isn’t on this tablet yet. Open the app once while online.'; });
 
@@ -63,7 +103,8 @@ export function mountMap(container) {
     // Colours follow the theme.
     const cs = getComputedStyle(document.documentElement), css = (k, d) => cs.getPropertyValue(k).trim() || d;
     Object.assign(INK, { bg: css('--mapbg', INK.bg), major: css('--road-major', INK.major), road: css('--road', INK.road), minor: css('--road-minor', INK.minor),
-      label: css('--maplabel', INK.label), onto: css('--info', INK.onto), track: css('--good', INK.track), bridge: css('--watch', INK.bridge), ink: css('--text', '#e8eaed') });
+      label: css('--maplabel', INK.label), onto: css('--info', INK.onto), track: css('--good', INK.track), bridge: css('--watch', INK.bridge), ink: css('--text', '#e8eaed'),
+      route: css('--route', '#ff6bd6') });
     const ctx = canvas.getContext('2d');
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = INK.bg; ctx.fillRect(0, 0, W, H);
@@ -106,6 +147,36 @@ export function mountMap(container) {
       for (const rd of vis) if (roadKeys(rd).includes(ontoKey)) { path(rd); any = true; }
       if (any) { ctx.strokeStyle = INK.onto; ctx.lineWidth = 9 * k; ctx.globalAlpha = 0.85; ctx.stroke(); ctx.globalAlpha = 1; }
     }
+    // The route ahead: the app's best guess from the instructions, about once a second, with how sure it
+    // is. Dashed under 60%, not drawn under 30%; each turn marker carries the chance the line is right to it.
+    if (GRAPH && projectRoute && live.started && st?.D != null && (force || now - projAt > 1000)) {
+      projAt = now;
+      try { proj = projectRoute(GRAPH, { x: x0, y: y0, headingDeg: v > 1.5 ? heading : null, D: st.D, rows: live.schedule.rows, maxTurns: 3 }); } catch (e) { proj = null; console.warn('route guess', e); }
+    }
+    if (proj && proj.path?.length > 1) {
+      // The chip: how sure the line is to the next turn (the markers say it for the turns after).
+      const pct = Math.round(100 * (proj.turns?.[0]?.conf ?? proj.conf));
+      guess.hidden = false;
+      guess.className = `mp-guess ${pct >= 75 ? 'mp-g-good' : pct >= 50 ? 'mp-g-watch' : 'mp-g-low'}`;
+      guess.textContent = pct >= 30 ? `Route guess: ${pct}% sure` : `Route guess: not sure (${pct}%)`;
+      if (pct >= 30) {
+        ctx.beginPath();
+        proj.path.forEach(([x, y], i) => (i ? ctx.lineTo(sx(x, y), sy(x, y)) : ctx.moveTo(sx(x, y), sy(x, y))));
+        ctx.strokeStyle = INK.route; ctx.lineWidth = 6 * k + 2; ctx.globalAlpha = 0.9;
+        ctx.setLineDash(pct < 60 ? [16, 10] : []); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
+        let run = 1;
+        for (const t of proj.turns || []) {
+          run *= t.conf ?? 1;
+          const X = sx(t.x, t.y), Y = sy(t.x, t.y);
+          ctx.beginPath(); ctx.arc(X, Y, 14, 0, 2 * Math.PI); ctx.fillStyle = INK.route; ctx.fill();
+          ctx.lineWidth = 2; ctx.strokeStyle = INK.bg; ctx.stroke();
+          ctx.font = '800 13px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = INK.bg;
+          ctx.fillText(String(t.n), X, Y + 0.5);
+          halo(ctx, `${t.dir === 'L' || t.dir === 'BL' ? '◀ ' : ''}${Math.round(100 * run)}%${t.dir === 'R' || t.dir === 'BR' ? ' ▶' : ''}`, X, Y + 25, INK.route, 'center', 13);
+        }
+      }
+    } else guess.hidden = true;
+    if (live.started && GRAPH) { try { checkOffRoute(x0, y0, v, now, st ?? {}, live); } catch (e) { console.warn('off-route check', e); } }
     // The track driven so far (1 s points; the last 2 hours).
     const tr = live.track || [];
     if (tr.length > 1) {
