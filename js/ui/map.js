@@ -1,6 +1,7 @@
-// Map view for the Drive screen: the offline road map around the car, heading up, with the track driven so
-// far, covered bridges and road names. The road the next instruction turns onto is drawn in blue.
-// mountMap(container, { onClose }) -> { update(state, live), destroy() }
+// Map view for the Drive screen: the offline road map around the car, turning with the car (heading up)
+// and zooming by itself so the next instruction fits, with the track driven so far, covered bridges and
+// road names. The road the next instruction turns onto is drawn in blue. + and − bias the zoom.
+// mountMap(container) -> { update(state, live), destroy() }
 import { h } from './dom.js';
 import { decodeMap, roadKey, roadKeys, nearestRoad } from '../core/mapview.js';
 
@@ -12,7 +13,6 @@ export function loadMap(url = 'map/roads.json') {
   return LOADING;
 }
 
-const ZOOMS = [1.5, 2.5, 4, 7, 12, 20];             // metres per screen pixel
 const WIDTH = [7, 6.5, 6, 5.5, 5, 4, 4, 2.2, 1.6];   // line width by road class: motorway … track
 const INK = { bg: '#0e1217', major: '#8b97a4', road: '#5f6a76', minor: '#434b55', label: '#c9d1d9', onto: '#7cc4ff', track: '#3ddc84', bridge: '#f5b942' };
 
@@ -22,19 +22,19 @@ function halo(ctx, s, x, y, color, align = 'center', px = 15) {
   ctx.fillStyle = color; ctx.fillText(s, x, y);
 }
 
-export function mountMap(container, { onClose } = {}) {
+export function mountMap(container) {
   const canvas = h('canvas', { class: 'mp-canvas' });
   const status = h('div', { class: 'mp-status' }, 'Loading the map…');
   const road = h('div', { class: 'mp-road' });
   const speed = h('div', { class: 'mp-speed' });
-  const btn = (label, aria, fn, cls = '') => h('button', { class: `mp-btn ${cls}`, 'aria-label': aria, onclick: fn }, label);
+  const btn = (label, aria, fn) => h('button', { class: 'mp-btn', 'aria-label': aria, onclick: fn }, label);
   const root = h('div', { class: 'mp-root' }, canvas, speed,
-    h('div', { class: 'mp-tools' }, btn('List', 'Back to the instruction list', () => onClose?.(), 'mp-list'),
-      btn('+', 'Zoom in', () => zoom(-1)), btn('−', 'Zoom out', () => zoom(1))),
+    h('div', { class: 'mp-tools' }, btn('+', 'Zoom in', () => zoom(0.7)), btn('−', 'Zoom out', () => zoom(1.45))),
     road, status, h('div', { class: 'mp-attr' }, '© OpenStreetMap contributors'));
   container.append(root);
-  let zi = 2, last = null, drawnAt = 0, heading = null;
-  const zoom = (d) => { zi = Math.max(0, Math.min(ZOOMS.length - 1, zi + d)); draw(true); };
+  // bias: the crew's zoom on top of the automatic one; rot: the drawn heading, eased toward the car's.
+  let bias = 1, mpp = null, last = null, drawnAt = 0, heading = null, rot = null;
+  const zoom = (f) => { bias = Math.max(0.35, Math.min(3, bias * f)); draw(true); };
   loadMap().then(() => draw(true)).catch(() => { status.hidden = false; status.textContent = 'The map isn’t on this tablet yet. Open the app once while online.'; });
 
   function update(st, live) { last = { st, live }; draw(false); }
@@ -50,9 +50,12 @@ export function mountMap(container, { onClose } = {}) {
     if (!fix) { status.hidden = false; status.textContent = 'Waiting for a GPS position…'; return; }
     status.hidden = MAP.inside(fix.lat, fix.lon);
     if (!status.hidden) status.textContent = 'Outside the map area (Ashtabula to Erie).';
+    // Heading up: the car's course once it's moving (north up until then), eased so the map turns smoothly.
+    const v = (st?.speed_mph ?? 0) * 0.44704;
     const hd = live.headings?.[live.headings.length - 1];
-    if (hd && (st?.speed_mph ?? 0) > 3) heading = hd.h;
-    const th = (heading ?? 0) * Math.PI / 180, cos = Math.cos(th), sin = Math.sin(th);
+    if (hd && v > 1.5) heading = hd.h;
+    if (heading !== null) rot = rot === null ? heading : (rot + (((heading - rot) % 360 + 540) % 360 - 180) * (force ? 1 : 0.35) + 360) % 360;
+    const th = (rot ?? 0) * Math.PI / 180, cos = Math.cos(th), sin = Math.sin(th);
 
     const box = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
     const W = Math.max(1, Math.round(box.width)), H = Math.max(1, Math.round(box.height));
@@ -61,8 +64,13 @@ export function mountMap(container, { onClose } = {}) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = INK.bg; ctx.fillRect(0, 0, W, H);
 
-    // Car at (cx, cy), its heading up; world (x east, y north, metres) to screen.
-    const mpp = ZOOMS[zi], cx = W / 2, cy = H * 0.66;
+    // Car at (cx, cy), its heading up; world (x east, y north, metres) to screen. Zoom: the stretch ahead
+    // shows the next instruction (with some road beyond it), at least 20 s of driving and 200 m, at most 2.5 km.
+    const cx = W / 2, cy = H * 0.68;
+    const toNext = st?.next?.to_mi != null && st.next.to_mi > 0 ? st.next.to_mi * 1609.344 : null;
+    const ahead = Math.min(2500, Math.max(200, v * 20, toNext !== null ? toNext * 1.25 + 50 : 0));
+    const want = Math.max(0.6, ahead / cy * bias);
+    mpp = mpp === null || force ? want : mpp + (want - mpp) * 0.3;
     const [x0, y0] = MAP.toLocal(fix.lat, fix.lon);
     const sx = (x, y) => cx + ((x - x0) * cos - (y - y0) * sin) / mpp;
     const sy = (x, y) => cy - ((x - x0) * sin + (y - y0) * cos) / mpp;
@@ -131,7 +139,7 @@ export function mountMap(container, { onClose } = {}) {
     ctx.beginPath(); ctx.moveTo(sxL, syL - 6); ctx.lineTo(sxL, syL); ctx.lineTo(sxL + px, syL); ctx.lineTo(sxL + px, syL - 6); ctx.stroke();
     halo(ctx, step >= 2640 ? `${step / 5280} mi` : `${step} ft`, sxL + px + 8, syL - 4, '#e8eaed', 'left', 13);
     // The road under the car.
-    const near = nearestRoad(MAP, x0, y0, heading);
+    const near = nearestRoad(MAP, x0, y0, v > 1.5 ? heading : null);
     const nm = near ? MAP.roads[near.i].name : '';
     road.textContent = nm ? `On ${nm}` : '';
   }

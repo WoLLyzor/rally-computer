@@ -85,8 +85,19 @@
 .nv-tadown summary{cursor:pointer;padding:8px 0;color:var(--muted)}
 .nv-sheet-note{color:var(--muted);margin:0 0 10px;font-size:1rem}
 
-/* ---- map (in place of the navigator's list) ---- */
-.mp-pane{position:absolute;inset:0}
+/* ---- map, under the driver's numbers (the list and controls stay) ---- */
+.drive.with-map>div:first-child{display:flex;flex-direction:column}
+.drive.with-map .dv-root{height:auto;flex:0 0 auto;flex-direction:row;flex-wrap:wrap;align-items:center;align-content:center;gap:0 3vw;padding:1vh 2vw}
+.drive.with-map .dv-alert{flex:0 0 100%;font-size:2.8vh;margin:0 0 .5vh}
+.drive.with-map .dv-delta{flex:1 1 auto}
+.drive.with-map .dv-big{font-size:min(16vh,10vw)}
+.drive.with-map .dv-big.dv-small{font-size:min(11vh,7vw)}
+.drive.with-map .dv-word{font-size:3.4vh}
+.drive.with-map .dv-bottom{flex:0 0 auto;border-top:0;padding-top:0}
+.drive.with-map .dv-speed{flex:none}
+.drive.with-map .dv-target{font-size:10vh}
+.drive.with-map .dv-next{display:none}
+.mp-pane{position:relative;flex:1;min-height:0;border-top:1px solid var(--line)}
 .mp-root{position:absolute;inset:0;background:#0e1217;overflow:hidden}
 .mp-canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
 .mp-tools{position:absolute;top:8px;right:8px;display:flex;flex-direction:column;gap:8px}

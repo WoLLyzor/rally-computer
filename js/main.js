@@ -211,7 +211,8 @@ function showDrive() {
   ensureLive(); startSensors(); keepAwake();
   const driverOnly = new URLSearchParams(location.search).get('driver') === '1';
   const startBtn = h('button', { onclick: () => { if (!live.started) live.action('start'); startBtn.remove(); } }, 'START (at the start line)');
-  const mapBtn = h('button', { onclick: () => setMap(!S.mapOn) }, S.mapOn ? 'List' : 'Map');
+  S.mapOn ??= store.get('mapOn', false);
+  const mapBtn = h('button', { onclick: () => setMap(!S.mapOn) }, 'Map');
   const extras = [...(driverOnly ? [] : [mapBtn]), h('button', { onclick: connectRaceBox }, 'RaceBox'), h('button', { onclick: () => document.documentElement.requestFullscreen?.() }, '⤢')];
   if (!live.started) extras.unshift(startBtn);
   app.append(topbar('Drive', extras));
@@ -222,16 +223,16 @@ function showDrive() {
   const digest = S.route?.digest ?? null;
   const nav = mountNavigator(nEl, { instructions: live.schedule.rows, table: live.schedule.table(), unit: S.settings.timingUnit, digest,
     onAction: (name, p) => { live.action(name, p); nav.setRoute(live.schedule.rows, live.schedule.table(), digest); } });
-  // The map, in place of the navigator's list (Map / List in the top bar, or List on the map).
-  const navRoot = nEl.firstElementChild, mEl = h('div', { class: 'mp-pane', hidden: true });
-  nEl.append(mEl);
+  // The map, under the driver's numbers (Map / Hide map in the top bar); the list and controls stay.
+  const mEl = h('div', { class: 'mp-pane', hidden: true });
+  dEl.append(mEl);
   let map = null;
   function setMap(on) {
-    S.mapOn = on;
-    if (on && !map) map = mountMap(mEl, { onClose: () => setMap(false) });
+    S.mapOn = on; store.set('mapOn', on);
+    if (on && !map) map = mountMap(mEl);
     mEl.hidden = !on;
-    if (navRoot) navRoot.hidden = on;
-    mapBtn.textContent = on ? 'List' : 'Map';
+    grid.classList.toggle('with-map', on);
+    mapBtn.textContent = on ? 'Hide map' : 'Map';
     if (on && live.state) map.update(live.state, live);
   }
   if (S.mapOn && !driverOnly) setMap(true);
