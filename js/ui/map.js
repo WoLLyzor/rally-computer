@@ -55,7 +55,7 @@ export function mountMap(container) {
     return best;
   };
   function checkOffRoute(x, y, v, now, st, live) {
-    const pct = proj ? Math.round(100 * (proj.turns?.[0]?.conf ?? proj.conf)) : 0;
+    const pct = proj ? Math.round(100 * (proj.turns?.[0]?.path_conf ?? proj.turns?.[0]?.conf ?? proj.conf)) : 0;
     const hint = live.mapHint;
     if (hint && (st.next?.n !== hint.nextN || now - hint.at > 45000)) live.mapHint = null;   // the app moved on, or it's stale
     if (!good) { if (proj && pct >= 85) good = { path: proj.path, pct, road: proj.road, nextN: st.next?.n }; return; }
@@ -155,7 +155,7 @@ export function mountMap(container) {
     }
     if (proj && proj.path?.length > 1) {
       // The chip: how sure the line is to the next turn (the markers say it for the turns after).
-      const pct = Math.round(100 * (proj.turns?.[0]?.conf ?? proj.conf));
+      const pct = Math.round(100 * (proj.turns?.[0]?.path_conf ?? proj.turns?.[0]?.conf ?? proj.conf));
       guess.hidden = false;
       guess.className = `mp-guess ${pct >= 75 ? 'mp-g-good' : pct >= 50 ? 'mp-g-watch' : 'mp-g-low'}`;
       guess.textContent = pct >= 30 ? `Route guess: ${pct}% sure` : `Route guess: not sure (${pct}%)`;
@@ -166,7 +166,7 @@ export function mountMap(container) {
         ctx.setLineDash(pct < 60 ? [16, 10] : []); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
         let run = 1;
         for (const t of proj.turns || []) {
-          run *= t.conf ?? 1;
+          run = t.path_conf ?? run * (t.conf ?? 1);   // the chance the line is right up to this turn
           const X = sx(t.x, t.y), Y = sy(t.x, t.y);
           ctx.beginPath(); ctx.arc(X, Y, 14, 0, 2 * Math.PI); ctx.fillStyle = INK.route; ctx.fill();
           ctx.lineWidth = 2; ctx.strokeStyle = INK.bg; ctx.stroke();
