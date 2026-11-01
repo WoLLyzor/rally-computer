@@ -60,6 +60,10 @@ export function mountMap(container) {
     const box = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
     const W = Math.max(1, Math.round(box.width)), H = Math.max(1, Math.round(box.height));
     if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) { canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr); }
+    // Colours follow the theme.
+    const cs = getComputedStyle(document.documentElement), css = (k, d) => cs.getPropertyValue(k).trim() || d;
+    Object.assign(INK, { bg: css('--mapbg', INK.bg), major: css('--road-major', INK.major), road: css('--road', INK.road), minor: css('--road-minor', INK.minor),
+      label: css('--maplabel', INK.label), onto: css('--info', INK.onto), track: css('--good', INK.track), bridge: css('--watch', INK.bridge), ink: css('--text', '#e8eaed') });
     const ctx = canvas.getContext('2d');
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = INK.bg; ctx.fillRect(0, 0, W, H);
@@ -124,20 +128,20 @@ export function mountMap(container) {
       halo(ctx, b.name, X + 15, Y, INK.bridge, 'left', 15);
     }
     // The car.
-    ctx.fillStyle = '#ffffff'; ctx.strokeStyle = INK.bg; ctx.lineWidth = 3;
+    ctx.fillStyle = INK.ink; ctx.strokeStyle = INK.bg; ctx.lineWidth = 3;
     ctx.beginPath(); ctx.moveTo(cx, cy - 17); ctx.lineTo(cx + 12, cy + 12); ctx.lineTo(cx, cy + 6); ctx.lineTo(cx - 12, cy + 12); ctx.closePath(); ctx.stroke(); ctx.fill();
     // North arrow and scale.
     const nx = W - 36, ny = H - 48;
-    ctx.beginPath(); ctx.arc(nx, ny, 20, 0, 2 * Math.PI); ctx.fillStyle = 'rgba(21,26,32,.9)'; ctx.fill();
+    ctx.beginPath(); ctx.arc(nx, ny, 20, 0, 2 * Math.PI); ctx.fillStyle = INK.bg; ctx.fill();
     ctx.save(); ctx.translate(nx, ny); ctx.rotate(-th);
-    ctx.beginPath(); ctx.moveTo(0, -15); ctx.lineTo(6, 2); ctx.lineTo(-6, 2); ctx.closePath(); ctx.fillStyle = '#e8eaed'; ctx.fill();
-    halo(ctx, 'N', 0, 9, '#e8eaed', 'center', 11);
+    ctx.beginPath(); ctx.moveTo(0, -15); ctx.lineTo(6, 2); ctx.lineTo(-6, 2); ctx.closePath(); ctx.fillStyle = INK.ink; ctx.fill();
+    halo(ctx, 'N', 0, 9, INK.ink, 'center', 11);
     ctx.restore();
     const ft = mpp * 120 / 0.3048, step = [100, 200, 500, 1000, 2640, 5280, 10560].find((s) => s >= ft / 2) ?? 10560;
     const px = step * 0.3048 / mpp, sxL = 12, syL = H - 30;
-    ctx.strokeStyle = '#e8eaed'; ctx.lineWidth = 3;
+    ctx.strokeStyle = INK.ink; ctx.lineWidth = 3;
     ctx.beginPath(); ctx.moveTo(sxL, syL - 6); ctx.lineTo(sxL, syL); ctx.lineTo(sxL + px, syL); ctx.lineTo(sxL + px, syL - 6); ctx.stroke();
-    halo(ctx, step >= 2640 ? `${step / 5280} mi` : `${step} ft`, sxL + px + 8, syL - 4, '#e8eaed', 'left', 13);
+    halo(ctx, step >= 2640 ? `${step / 5280} mi` : `${step} ft`, sxL + px + 8, syL - 4, INK.ink, 'left', 13);
     // The road under the car.
     const near = nearestRoad(MAP, x0, y0, v > 1.5 ? heading : null);
     const nm = near ? MAP.roads[near.i].name : '';

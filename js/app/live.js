@@ -7,8 +7,8 @@ import { TurnDetector, RouteProgress } from '../core/turns.js';
 import { buildSchedule, recommendTA, carStartTod, richtaLadder, taPresses, restartNext } from '../core/timing.js';
 import { targetSpeed, capFor, SpeedAnnouncer, LimitTracker } from '../core/speed.js';
 import { buildDelays, plannedOffsetFn, slowdownLossS } from '../core/plan.js';
-import { fmtTod, zoneEdge } from '../core/instruction.js';
-import { instructionPhrase } from './voice.js';
+import { fmtTod, zoneEdge, parseTod } from '../core/instruction.js';
+import { instructionPhrase, spokenDistance } from './voice.js';
 
 const wrap180 = (d) => ((d + 540) % 360) - 180;
 const fmtMS = (s) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
@@ -261,6 +261,25 @@ export class LiveLoop {
         if (rs) this.voice?.speak(`Segment done. Timing starts again at the restart, instruction ${rs.n}.`, { key: `wait:${rs.n}`, alert: true });
         break;
       }
+      // One button for whatever Richta just signalled: before the start it's the start; at a restart gate
+      // (the segment done, or the car at the restart's mileage) it starts the next segment; otherwise it's a
+      // checkpoint ('beep': the segment's end if a restart is the next timed line). p.via: 'tap' or 'mic'.
+      case 'richta': {
+        const tod = p.tod ?? this.clock.nowTod(), D = p.D ?? e.D;
+        // The microphone and a tap can both catch one beep: a second signal within 15 s is the same beep.
+        if (this.lastRichta != null && Math.abs(tod - this.lastRichta) < 15) { this.addLog(`Richta beep ${p.via === 'mic' ? 'heard' : 'tapped'} again within 15 s: the same beep, not counted twice`); break; }
+        this.lastRichta = tod;
+        if (!this.started) {
+          const at = this.schedule.perfectTimeAt(0);
+          if (at === null || Math.abs(tod - at) <= 180) { this.action('start'); this.voice?.speak('Started.', { key: `richta-start:${Math.round(tod)}`, alert: true }); }
+          else this.addLog(`Richta beep ${p.via === 'mic' ? 'heard' : 'tapped'} at ${fmtTod(tod)}, before the start: ignored (START is at ${fmtTod(at)})`);
+          break;
+        }
+        const rs = this.pendingRestart(D);
+        if (rs && (this.schedule.waitingAt(D) || (rs.D !== null && D >= rs.D - 0.1))) this.startSegment(rs, tod, D, p.via);
+        else this.action('beep', { tod, D, delta: this.state?.delta_s ?? null });
+        break;
+      }
       case 'restart': this.ev.restarts.push({ D: e.D, tod: typeof p.tod === 'number' ? fmtTod(p.tod) : p.tod }); this.undo.push({ kind: 'restart' }); this.rebuild(); this.addLog(`Restart ${p.tod}`); break;
       case 'jump': this.progress.jump(p.n); this.addLog(`Next instruction set to #${p.n}`); break;
       case 'here': {   // the navigator says the car is at instruction #n now (after a pause)
@@ -270,7 +289,7 @@ export class LiveLoop {
         this.undo.push({ kind: 'here', theta: [...e.theta], Ptheta: e.Ptheta.map((x) => [...x]), idx: this.progress.idx, done: [...this.progress.done], recover: this.recover ?? null });
         const jump = e.reanchor(row.D, sNow, `#${row.n} navigator`);
         this.progress.jump(rows[i + 1]?.n ?? row.n); this.progress.done.add(row.n);
-        this.recover = null;
+        this.recover = null; this.offStart = null; this.progress.clearAlert();   // also "back on route" after a missed turn
         this.lastResync = `#${row.n} by navigator ${jump >= 0 ? '+' : ''}${jump.toFixed(3)} mi`;
         this.addLog(`At #${row.n} (navigator): distance ${jump >= 0 ? '+' : ''}${jump.toFixed(3)} mi`);
         break;
@@ -289,7 +308,13 @@ export class LiveLoop {
         const u = this.undo.pop();
         if (!u) break;
         if (u.kind === 'ta') this.ev.tas.pop();
+        if (u.kind === 'segend' || u.kind === 'segstart') this.lastRichta = null;   // a corrected beep can be signalled again
         if (u.kind === 'segend') this.ev.segEnds.pop();
+        if (u.kind === 'segstart') {
+          if (u.restarted) this.ev.restarts.pop();
+          if (u.marked) delete this.ev.marks[u.n];
+          (this.noAuto ??= new Set()).add(u.n);
+        }
         if (u.kind === 'restart') { this.ev.restarts.pop(); if (u.auto) (this.noAuto ??= new Set()).add(u.auto); }   // an undone automatic restart stays undone
         if (u.kind === 'mark') delete this.ev.marks[u.n];
         if (u.kind === 'checkpoint') { if (u.which === 'out') delete this.ev.outTimes[u.n]; else delete this.ev.inTimes[u.n]; }
@@ -323,6 +348,34 @@ export class LiveLoop {
     } else this.calWarn = null;
   }
 
+  // The next restart line not yet counted (the start of the next segment), or null.
+  pendingRestart(D) {
+    const rows = this.schedule.rows, k = Math.max(0, (this.progress?.idx ?? 0) - 1);
+    return rows.slice(k).find((r) => (r.restart_tod || r.restart_any) && (r.D === null || r.D >= D - 0.3)
+      && !this.ev.restarts.some((x) => x.n === r.n || (r.D !== null && Math.abs(x.D - r.D) <= 0.1))) ?? null;
+  }
+
+  // The car is at restart #rs.n (Richta signalled it): a restart with no mileage (the odometer starts again
+  // at the gate) gets its place from here, and one timed by the crew (any minute, flying) gets its time:
+  // the minute the car crossed in (Richta counts the minute at or before the crossing), or the exact time.
+  startSegment(rs, tod, D, via = 'tap') {
+    let marked = false, restarted = false;
+    if (rs.D === null) { this.ev.marks[rs.n] = D; marked = true; this.rebuild(); }
+    const row = this.schedule.rows.find((r) => r.n === rs.n) ?? rs;
+    let t = null;
+    if (row.restart_any) {
+      t = row.restart_any === 'minute' ? Math.floor(tod / 60) * 60 : tod;
+      this.ev.restarts.push({ D: row.D ?? D, tod: t, n: row.n }); restarted = true; this.rebuild();
+    }
+    this.undo.push({ kind: 'segstart', n: row.n, marked, restarted });
+    const at = t ?? this.schedule.perfectTimeAt(row.D ?? D);
+    this.addLog(`Segment started at restart #${row.n} (Richta ${via === 'mic' ? 'heard' : 'tapped'})${at !== null ? `: timing from ${fmtTod(at)}` : ''}${marked ? '; mileage from here' : ''}`, { claim: true });
+    if (at !== null) {
+      const hh = Math.floor(at / 3600) % 12 || 12, mm = Math.floor(at / 60) % 60;
+      this.voice?.speak(`Segment started. Timing from ${hh} ${String(mm).padStart(2, '0')}.`, { key: `segstart:${row.n}`, alert: true });
+    } else this.voice?.speak('Segment started.', { key: `segstart:${row.n}`, alert: true });
+  }
+
   // ---- 10 Hz state ----
   tick() {
     const st = this.settings, e = this.engine, sch = this.schedule;
@@ -334,14 +387,15 @@ export class LiveLoop {
     const D = e.D;
     if (this.progress) this.progress.calibrated = e.calibrated;
     // A restart with no printed time (on any minute you choose, or flying) is counted as the car crosses its
-    // point: at the nearest whole minute, or the exact time for a flying restart. It's said aloud so the
-    // crew can check it against Richta's out time; the Restart button or Undo last corrects it.
+    // point: at the minute it crossed in (Richta counts the minute at or before the crossing), or the exact
+    // time for a flying restart. It's said aloud so the crew can check it against Richta's out time; the
+    // Restart time button or Undo last corrects it.
     if (this.started && !this.recover && e.v > 2) {
       const ra = sch.rows.find((r) => r.restart_any && r.D !== null && D >= r.D && D < r.D + 0.2 && !this.noAuto?.has(r.n) && !this.ev.restarts.some((x) => Math.abs(x.D - r.D) <= 0.1));
       if (ra) {
-        const t = ra.restart_any === 'minute' ? Math.round(now / 60) * 60 : now;
+        const t = ra.restart_any === 'minute' ? Math.floor(now / 60) * 60 : now;
         this.ev.restarts.push({ D: ra.D, tod: t, n: ra.n }); this.undo.push({ kind: 'restart', auto: ra.n }); this.rebuild();
-        this.addLog(`Restart #${ra.n} counted at ${fmtTod(t)} (${ra.restart_any === 'minute' ? 'the nearest minute' : 'flying'}): check it against Richta's out time`, { claim: true });
+        this.addLog(`Restart #${ra.n} counted at ${fmtTod(t)} (${ra.restart_any === 'minute' ? 'the minute you crossed in' : 'flying'}): check it against Richta's out time`, { claim: true });
         const hh = Math.floor(t / 3600) % 12 || 12, mm = Math.floor(t / 60) % 60, ss = Math.floor(t % 60);
         this.voice?.speak(`Restart counted at ${hh} ${String(mm).padStart(2, '0')}${ra.restart_any === 'flying' ? ` and ${ss} seconds` : ''}.`, { key: `restart:${ra.n}`, alert: true });
       }
@@ -383,11 +437,12 @@ export class LiveLoop {
     const offset = this.started ? this.offsetFn(D) : 0;
     // Between a segment's last control and its restart: no time or speed calls, just the way to the restart
     // (with a countdown when the restart time is printed).
-    const waitRow = this.started && sch.waitingAt(D) ? sch.rows.find((r) => (r.restart_tod || r.restart_any) && r.D !== null && r.D >= D - 0.2) ?? null : null;
+    const waitRow = this.started && sch.waitingAt(D) ? sch.rows.find((r) => (r.restart_tod || r.restart_any) && (r.D === null || r.D >= D - 0.2)) ?? null : null;
     let waiting = null;
     if (waitRow) {
-      const at = waitRow.restart_tod ? sch.perfectTimeAt(waitRow.D) : null;
-      waiting = { n: waitRow.n, to_mi: waitRow.D - D, tod: at, in_s: at !== null ? at - now : null };
+      // A printed restart time counts down even before the gate is placed (+ car number when it says so).
+      const at = waitRow.restart_tod ? (waitRow.D !== null ? sch.perfectTimeAt(waitRow.D) : parseTod(waitRow.restart_tod) + (waitRow.restart_plus_car ? 60 * (st.carNumber ?? 0) : 0)) : null;
+      waiting = { n: waitRow.n, to_mi: waitRow.D !== null ? waitRow.D - D : null, tod: at, in_s: at !== null ? at - now : null, any: waitRow.restart_any ?? null };
     }
     const adv = waiting ? null : targetSpeed({ deltaS: delta, offsetS: offset, castMph: cast, limitMph: lim.mph, defaultLimit: st.defaultLimit, horizonMi: st.horizonMi, horizonS: st.horizonS });
     const said = this.ann.update(now, adv);
@@ -400,12 +455,21 @@ export class LiveLoop {
     const after = idx >= 0 ? sch.rows.slice(idx + 1, idx + 4) : [];
     const base = next ? (sch.bases[next.section] ?? 0) : 0;
     let alert = null;
-    if (pr.alert) alert = { kind: 'missed_turn', text: `Missed turn? Check #${pr.alert.n} at ${fmtOm(pr.alert.D - (sch.bases[sch.rows.find((r) => r.n === pr.alert.n)?.section] ?? 0))}` };
+    if (pr.alert) alert = { kind: 'missed_turn', n: pr.alert.n, back_mi: D - pr.alert.D, text: `Missed turn? Check #${pr.alert.n} at ${fmtOm(pr.alert.D - (sch.bases[sch.rows.find((r) => r.n === pr.alert.n)?.section] ?? 0))}` };
     if (this.offStart) alert = { kind: 'offcourse', text: `Off course since ${fmtOm(this.offStart.D - base)} · ${((e.s - this.offStart.s) / 1609.344).toFixed(2)} mi` };
     else if (this.recover) alert = { kind: 'recovering', text: `Paused ${this.recover.gapS} s: distance may be up to ${this.recover.eHi.toFixed(2)} mi short. Tap the instruction you're at (or wait for the next turn).` };
     if (this.calWarn && tn < this.calWarn.until) alert = alert ?? { kind: 'calibration', text: `Odometer factor ${this.calWarn.K.toFixed(3)} looks wrong (${((this.calWarn.K - 1) * 100).toFixed(1)}% off). Tapped End odo check at the wrong place? Then Undo last.` };
     if (e.health.racebox === 'lost' && e.health.gps !== 'ok' && this.started) alert = alert ?? { kind: 'gps_lost', text: 'No GPS: distance is estimated' };
 
+    // Before the start: a spoken countdown to the car's start time.
+    if (!this.started && this.voice) {
+      const at = sch.perfectTimeAt(0), left = at === null ? null : at - now;
+      if (left !== null && left > -5) {
+        for (const [s, txt] of [[60, 'One minute to your start.'], [30, 'Thirty seconds to your start.'], [10, 'Ten seconds.'], [5, 'Five.'], [0, 'Go. Tap START.']]) {
+          if (left <= s && left > s - 2) this.voice.speak(txt, { key: `pre:${Math.round(at)}:${s}`, alert: s === 0 });
+        }
+      }
+    }
     this.cues({ D, next, delta, speak: said.speak, display: said.display, cap: adv?.cap ?? null, alert, hold, waiting });
 
     this.state = {
@@ -444,8 +508,8 @@ export class LiveLoop {
       if (next.D === null) v.speak(`Next: ${phrase}. Mark it when you see it.`, { key: `next:${next.n}` });
       else {
         const to = next.D - D;
-        if (to <= 0.3 && to > 0.15) v.speak(`In point three, ${phrase}.`, { key: `n3:${next.n}` });
-        else if (to <= 0.1 && to > -0.02) v.speak(phrase, { key: `n1:${next.n}` });
+        if (to <= 0.3 && to > 0.15) v.speak(`In ${spokenDistance(to)}, ${phrase}.`, { key: `n3:${next.n}` });
+        else if (to <= 0.1 && to > -0.02) v.speak(`${phrase[0].toUpperCase()}${phrase.slice(1)}.`, { key: `n1:${next.n}` });
       }
     }
     // Speed targets: on a change of 2 mph or more (at once if the cap drops below the last one said);
@@ -453,7 +517,7 @@ export class LiveLoop {
     const moving = this.engine.v >= 8 * 0.44704;
     if (speak !== null && !moving) this.speedHeld = true;
     if (moving && display !== null && (speak !== null || this.speedHeld)
-      && (this.spokenSpeed === null || Math.abs(display - this.spokenSpeed) >= 2 || (cap !== null && cap < this.spokenSpeed))) { v.speak(String(display)); this.spokenSpeed = display; }
+      && (this.spokenSpeed === null || Math.abs(display - this.spokenSpeed) >= 2 || (cap !== null && cap < this.spokenSpeed))) { v.speak(`Drive ${display}.`); this.spokenSpeed = display; }
     if (moving) this.speedHeld = false;
     // Time calls for the driver: "3 late" / "2 early" when off by 2 s or more, only while cruising (at
     // 70% of the CAST for 10 s, so never at a stop, a turn or pulling away), repeated only when the
@@ -469,7 +533,7 @@ export class LiveLoop {
         const c = this.lastCall;
         const changed = !c || c.sign !== Math.sign(delta) || Math.abs(n - c.n) >= 2 || band > c.band;
         if ((changed && sinceCall > 8) || sinceCall > 30) {
-          v.speak(`${n} ${delta > 0 ? 'late' : 'early'}`);
+          v.speak(`${n} second${n === 1 ? '' : 's'} ${delta > 0 ? 'late' : 'early'}.`);
           this.lastCall = { t: now, n, sign: Math.sign(delta), band };
         }
       } else if (a <= 0.6 && this.lastCall?.n >= 2 && sinceCall > 3 && sinceCue > 2) {

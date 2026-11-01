@@ -18,6 +18,7 @@ import { renderTimes } from './ui/times.js';
 import { prepareImage } from './app/image.js';
 import { RaceBox } from './sensors/racebox.js';
 import { TabletGps, listenButtons } from './sensors/gps.js';
+import { RichtaListener } from './app/listen.js';
 
 const app = document.getElementById('app');
 const S = {
@@ -28,7 +29,45 @@ const S = {
   view: null, timer: null,
 };
 const clock = new RallyClock(store.get('clock', null));
-const voice = new Voice({ enabled: S.settings.voice, rate: S.settings.voiceRate });
+const voice = new Voice({ enabled: S.settings.voice, rate: S.settings.voiceRate, name: S.settings.voiceName });
+
+// Hear Richta: the tablet's microphone taps RICHTA BEEPED when it hears the beep it learned at check-in.
+const listener = new RichtaListener({
+  isSpeaking: () => typeof speechSynthesis !== 'undefined' && speechSynthesis.speaking,
+  onBeep: () => {
+    ensureLive();
+    voice.speak('Heard Richta.', { alert: false });
+    const n0 = live.log.length;
+    live.action('richta', { via: 'mic' });
+    const fresh = live.log.slice(n0);
+    if (fresh.length) S.navApi?.toast(`🎤 Heard Richta. ${fresh[fresh.length - 1].text}`);
+  },
+});
+function syncListener() {
+  const want = S.settings.listenRichta && S.settings.richtaSound && RichtaListener.supported();
+  if (want && !listener.listening) listener.start(S.settings.richtaSound).catch((e) => { console.warn('microphone', e); S.status.mic = `off: ${e.message}`; });
+  else if (!want && listener.listening) listener.stop();
+}
+document.addEventListener('pointerdown', () => listener.resume(), { passive: true });
+function learnRichtaSheet() {
+  const msg = h('p', {}, 'Put the phone with Richta right next to the tablet, volume up. Tap Start, then run Richta’s Sound Check (or make Richta beep a few times) within 15 seconds.');
+  const bar = h('div', { class: 'bar' }, h('i', {}));
+  const back = h('div', { class: 'sheet-back' });
+  const close = () => { back.remove(); route(); };
+  const startBtn = h('button', { class: 'btn-primary', onclick: async () => {
+    startBtn.disabled = true; msg.textContent = 'Listening… run Richta’s Sound Check now.';
+    try {
+      const sound = await listener.learn(15, (f) => { bar.firstChild.style.width = `${Math.round(f * 100)}%`; });
+      if (sound) {
+        S.settings = { ...S.settings, richtaSound: sound, listenRichta: true }; saveSettings(S.settings); syncListener();
+        msg.textContent = `Learned Richta’s beep (${sound.tones.map((t) => `${(t / 1000).toFixed(1)} kHz`).join(', ')}). Hear Richta is on: the tablet taps RICHTA BEEPED when it hears it, and says "Heard Richta".`;
+      } else msg.textContent = 'No clear beep heard. Turn the phone’s volume up, put it closer, and try again.';
+    } catch (e) { msg.textContent = `The microphone didn’t start (${e.message}). Allow the microphone for this app, then try again.`; }
+    startBtn.disabled = false; startBtn.textContent = 'Try again';
+  } }, 'Start');
+  back.append(h('div', { class: 'sheet' }, h('h2', {}, 'Learn Richta’s beep'), msg, bar, h('div', { class: 'row', style: { marginTop: '12px' } }, startBtn, h('button', { onclick: close }, 'Close'))));
+  document.body.append(back);
+}
 let live = null;
 let racebox = null, gps = null;
 let wakeLock = null;
@@ -196,6 +235,7 @@ function showSettings() {
     onChange: (patch) => {
       S.settings = { ...S.settings, ...patch }; saveSettings(S.settings);
       voice.enabled = S.settings.voice; voice.rate = S.settings.voiceRate;
+      if ('theme' in patch) applyTheme();
       if (live) { live.settings = S.settings; live.rebuild(); }
     },
     actions: {
@@ -210,19 +250,40 @@ function showSettings() {
 function showDrive() {
   ensureLive(); startSensors(); keepAwake();
   const driverOnly = new URLSearchParams(location.search).get('driver') === '1';
+  const simple = (S.settings.navMode ?? 'simple') === 'simple';
   const startBtn = h('button', { onclick: () => { if (!live.started) live.action('start'); startBtn.remove(); } }, 'START (at the start line)');
-  S.mapOn ??= store.get('mapOn', false);
+  S.mapOn ??= store.get('mapOn', true);
   const mapBtn = h('button', { onclick: () => setMap(!S.mapOn) }, 'Map');
-  const extras = [...(driverOnly ? [] : [mapBtn]), h('button', { onclick: connectRaceBox }, 'RaceBox'), h('button', { onclick: () => document.documentElement.requestFullscreen?.() }, '⤢')];
-  if (!live.started) extras.unshift(startBtn);
+  const extras = [...(S.settings.listenRichta && S.settings.richtaSound ? [h('span', { class: 'badge good' }, '🎤 Hearing Richta')] : []),
+    ...(driverOnly ? [] : [mapBtn]), h('button', { onclick: connectRaceBox }, 'RaceBox'), h('button', { onclick: () => document.documentElement.requestFullscreen?.() }, '⤢')];
+  if (!live.started && !simple) extras.unshift(startBtn);   // simple mode has its own big START
   app.append(topbar('Drive', extras));
   const grid = h('div', { class: `drive${driverOnly ? ' driver-only' : ''}` });
   const dEl = h('div', {}), nEl = h('div', { class: 'navpane' });
   grid.append(dEl, nEl); app.append(grid);
   const driver = mountDriver(dEl, { unit: S.settings.timingUnit });
   const digest = S.route?.digest ?? null;
+  const setSetting = (k, v) => { S.settings[k] = v; saveSettings(S.settings); };
+  const THEMES = [['dark', 'Dark'], ['day', 'Daylight'], ['contrast', 'High contrast'], ['bridge', 'Covered bridge']];
+  const moreItems = [
+    { label: 'Change colours', note: `Now: ${THEMES.find((t) => t[0] === (S.settings.theme ?? 'dark'))?.[1] ?? 'Dark'}. Next: Daylight for bright sun, High contrast, Covered bridge.`,
+      run: () => { const i = THEMES.findIndex((t) => t[0] === (S.settings.theme ?? 'dark')); setSetting('theme', THEMES[(i + 1) % THEMES.length][0]); applyTheme(); } },
+    { label: simple ? 'Show all controls' : 'Simple controls', note: simple ? 'Every button at once, for an experienced navigator.' : 'Back to the six big buttons.',
+      run: () => { setSetting('navMode', simple ? 'full' : 'simple'); route(); } },
+    { label: 'Hear Richta: learn its beep', note: 'At check-in: the tablet learns Richta’s beep from its Sound Check (15 seconds).', run: learnRichtaSheet },
+    ...(S.settings.richtaSound ? [{ label: S.settings.listenRichta ? 'Hear Richta: turn off' : 'Hear Richta: turn on',
+      note: S.settings.listenRichta ? 'Stop listening. Turn it off if the car speakers start acting like a phone call.' : 'The tablet listens and taps RICHTA BEEPED for you; you can still tap it.',
+      run: () => { setSetting('listenRichta', !S.settings.listenRichta); syncListener(); route(); } }] : []),
+  ];
   const nav = mountNavigator(nEl, { instructions: live.schedule.rows, table: live.schedule.table(), unit: S.settings.timingUnit, digest,
-    onAction: (name, p) => { live.action(name, p); nav.setRoute(live.schedule.rows, live.schedule.table(), digest); } });
+    mode: simple ? 'simple' : 'full', startTod: clockStart(), moreItems,
+    onAction: (name, p) => {
+      const n0 = live.log.length;
+      live.action(name, p);
+      nav.setRoute(live.schedule.rows, live.schedule.table(), digest);
+      const fresh = live.log.slice(n0);
+      if (fresh.length) nav.toast(`✓ ${fresh[fresh.length - 1].text}`);
+    } });
   // The map, under the driver's numbers (Map / Hide map in the top bar); the list and controls stay.
   const mEl = h('div', { class: 'mp-pane', hidden: true });
   dEl.append(mEl);
@@ -236,7 +297,9 @@ function showDrive() {
     if (on && live.state) map.update(live.state, live);
   }
   if (S.mapOn && !driverOnly) setMap(true);
-  S.view = { destroy: () => { driver.destroy(); nav.destroy(); map?.destroy(); } };
+  S.navApi = nav;
+  syncListener();
+  S.view = { destroy: () => { S.navApi = null; driver.destroy(); nav.destroy(); map?.destroy(); } };
   let k = 0;
   S.driving = true;
   S.timer = setInterval(() => {
@@ -357,8 +420,12 @@ function showDiag() {
   S.timer = setInterval(run, 3000);
 }
 
+// Colours: Dark, Daylight (bright sun), High contrast, Covered bridge (autumn).
+function applyTheme() { document.documentElement.dataset.theme = S.settings.theme || 'dark'; }
+
 function route() {
   teardown();
+  applyTheme();
   const hash = location.hash || '#home';
   ({ '#scan': showScan, '#verify': showVerify, '#settings': showSettings, '#drive': showDrive, '#log': showLog, '#paper': showPaper, '#diag': showDiag }[hash] || showHome)();
 }

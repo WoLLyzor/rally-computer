@@ -254,7 +254,8 @@ export function parseBody(bodyRaw) {
   const ctl = up.match(CONTROL_RE);
   if (ctl) {
     const w = ctl[1];
-    r.control = /DIYC|YOURSELF/.test(w) ? 'diyc' : /GPS/.test(w) ? 'gps' : /PASSAGE/.test(w) ? 'passage' : 'open';
+    // A plain CHECKPOINT is Richta's kind on a Richta rally: no stop, no out time. Staffed ones say OPEN/TIME CONTROL.
+    r.control = /DIYC|YOURSELF/.test(w) ? 'diyc' : /GPS|CHECK\s*POINT/.test(w) ? 'gps' : /PASSAGE/.test(w) ? 'passage' : 'open';
     found.control = true; eat(ctl);
   }
 

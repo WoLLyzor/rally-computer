@@ -159,7 +159,7 @@ export function explain(ins, { glossary = null } = {}) {
     const c = { open: ['Checkpoint: stop at the orange sign; you get an out time', 'checkpoint'],
       passage: ['Passage control: drive past without stopping', 'passage control'],
       diyc: ['Do-it-yourself control: write down your arrival time; leave exactly 2 minutes later', 'do it yourself control'],
-      gps: ['GPS checkpoint (unmarked): just stay on time', 'GPS checkpoint'] }[ins.control] ?? ['Checkpoint', 'checkpoint'];
+      gps: ['Checkpoint (Richta): don’t stop; stay on time. Tap RICHTA BEEPED when Richta beeps', 'checkpoint'] }[ins.control] ?? ['Checkpoint', 'checkpoint'];
     sentences.push([{ t: c[0] }]); speech.push(c[1]);
   }
   const atSign = ins.action !== 'turn' && ins.cue === 'sign' && ins.sign_text ? [{ t: ' at the sign ' }, { t: `“${ins.sign_text}”`, k: 'sign' }] : [{ t: ' here' }];

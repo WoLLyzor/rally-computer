@@ -98,14 +98,20 @@ export function computeLegs(instructions) {
   return legs;
 }
 
-// Sections: OM restarts from zero after a reset ("/0.00"). Assigns ins.section in place
-// unless the source already numbered sections, and returns the section count.
+// Sections: OM restarts from zero after a reset ("/0.00"), or where the mileage simply starts again at
+// 0.00 (a segment whose mileage starts at its restart gate): that row opens a new section (section_start)
+// whose place on the route is unknown until the crew marks it there. Assigns ins.section in place unless
+// the source already numbered sections, and returns the section count.
+export const startsAgainAtZero = (prev, r) => !!prev && r.om != null && prev.om != null && r.om <= 0.1 && prev.om - r.om > 0.2;
 export function assignSections(instructions) {
   const rows = [...instructions].sort((a, b) => a.n - b.n);
-  let section = 1;
+  let section = 1, prev = null;
   for (const r of rows) {
-    r.section = section;
-    if (r.reset_odo || r.action === 'zero_odo') section += 1;
+    const zero = prev !== null && prev.section === section && startsAgainAtZero(prev, r);
+    if (zero) section += 1;
+    r.section = section; r.section_start = zero;
+    if ((r.reset_odo || r.action === 'zero_odo') && !zero) section += 1;
+    if (r.om != null) prev = r;
   }
   return section;
 }
@@ -129,9 +135,14 @@ export function runChecks(instructions, { pageRowCounts = null } = {}) {
   // OM increasing within each section; an OM drop without "/0.00" is a likely missed reset or misread.
   // Sections come from the reader when it numbered them, otherwise from the reset markers.
   const explicit = rows.some((r) => r.section > 1);
-  const sectionOf = new Map();
-  let s = 1;
-  for (const r of rows) { sectionOf.set(r, explicit ? r.section : s); if (r.reset_odo || r.action === 'zero_odo') s++; }
+  const sectionOf = new Map(), startsAt0 = new Set();
+  const copy = rows.map((r) => ({ ...r }));
+  if (!explicit) assignSections(copy);
+  rows.forEach((r, i) => {
+    sectionOf.set(r, explicit ? r.section : copy[i].section);
+    if (explicit ? r.section_start : copy[i].section_start) startsAt0.add(r);
+  });
+  for (const r of startsAt0) add(r.n, 'info', `Mileage starts again at ${r.om.toFixed(2)} here: a new segment. At its start (the restart gate) tap RICHTA BEEPED or MARK, so the app knows where it is`);
   let prev = null;
   for (const r of rows) {
     if (r.om === null) continue;

@@ -16,6 +16,8 @@ export function resolveRoute(instructions, { marks = {}, pins = {} } = {}) {
   let curSection = rows.length ? rows[0].section : 1;
   for (const r of rows) {
     if (r.section !== curSection) curSection = r.section;
+    // A section whose mileage starts again at 0.00 with no reset reading is placed by a mark at its first row.
+    if (r.section_start && (bases[r.section] === undefined || bases[r.section] === null) && marks[r.n] !== undefined) bases[r.section] = marks[r.n] - (r.om ?? 0);
     const base = bases[r.section];
     if (r.om !== null && r.om !== undefined && base !== undefined && base !== null) r.D = base + r.om;
     else if (marks[r.n] !== undefined) r.D = marks[r.n];
@@ -208,6 +210,18 @@ export function carStartTod(baseTod, carNumber) {
 // Returns [{ k, start: { n, kind, tod }, rows: [{ n, om, section, D, fromMi, cast, elapsed, elapsedLeave,
 // tod, todLeave, first, last }], end: last row with a mileage }].
 export function segmentTable(instructions, opts = {}) {
+  // A segment whose mileage starts again at 0.00 and isn't placed yet goes where the one before it ended,
+  // for the table only: its times count from its own start, so its exact place doesn't change them.
+  const marks = { ...(opts.marks || {}) };
+  for (let guard = 0; guard < 100; guard++) {
+    let lastD = 0, added = false;
+    for (const r of resolveRoute(instructions, { marks }).rows) {
+      if (r.D !== null) lastD = r.D;
+      else if (r.section_start && marks[r.n] === undefined) { marks[r.n] = lastD; added = true; break; }
+    }
+    if (!added) break;
+  }
+  opts = { ...opts, marks };
   const abs = buildSchedule(instructions, opts);
   const rows = abs.rows;
   if (!rows.length) return [];

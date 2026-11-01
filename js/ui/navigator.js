@@ -1,9 +1,12 @@
-// Navigator workstation.
-// mountNavigator(container, { instructions, table, unit, onAction }) -> { update, setRoute, setLog, destroy }
+// Navigator workstation. Simple mode (the default): a coach line saying what to do now, the list, and six
+// big labelled buttons; the rest under MORE. Full mode: every control at once.
+// mountNavigator(container, { instructions, table, unit, onAction, mode, startTod, moreItems })
+//   -> { update, setRoute, setLog, toast, setMode, destroy }
 import { h, clear, fmtOm, actionSummary, actionIcon, explainEl, digestEls } from './dom.js';
 import { glossaryOf } from '../core/extract.js';
 import { richtaLadder, taPresses, restartNext } from '../core/timing.js';
 import { deltaView, fmtCountdown } from './driver.js';
+import { coach } from '../app/coach.js';
 
 const p2 = (n) => String(n).padStart(2, '0');
 
@@ -18,7 +21,7 @@ export function fmtTod(s, unit) {
   return `${p2(H)}:${p2(M)}:${p2(Math.floor(S))}`;
 }
 
-export function mountNavigator(container, { instructions = [], table = [], unit = 's', digest = null, onAction } = {}) {
+export function mountNavigator(container, { instructions = [], table = [], unit = 's', digest = null, onAction, mode = 'simple', startTod = null, moreItems = [] } = {}) {
   const act = (name, arg) => { try { onAction && onAction(name, arg); } catch (e) { console.error(e); } };
   let dg = digest, gloss = dg ? glossaryOf(dg) : null;
   let ins = instructions, tbl = table, live = null, curN = null, off = false, lastAlertKind = null;
@@ -173,11 +176,57 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
   E.logBody = h('div', { class: 'nv-logbody' });
   const logPanel = h('details', { class: 'nv-log' }, h('summary', {}, 'Log'), E.logBody);
 
+  // Simple mode: six big buttons, each saying what it's for. The fourth slot is START before the start and
+  // BACK ON ROUTE after a missed turn or when off course; it keeps its place (empty) otherwise.
+  const big = (label, sub, cls, fn) => h('button', { class: `nv-sbtn ${cls}`, onclick: fn }, h('b', {}, label), h('small', {}, sub));
+  E.richtaBtn = big('RICHTA BEEPED', 'tap each time Richta beeps', 'nv-s-richta', () => act('richta', { via: 'tap' }));
+  E.markBtn = big('MARK', 'as you pass a sign or landmark', 'nv-s-mark', () => act('mark'));
+  E.delayBtn = big('DELAY', 'held up? add time', 'nv-s-delay', taSheet);
+  E.ctxBtn = big('START', 'as you leave the start line', 'nv-s-ctx', () => ctxRun());
+  E.undoBtn = big('UNDO', 'take back the last tap', 'nv-s-undo', () => act('undo'));
+  E.moreBtn = big('MORE', 'other tools and help', 'nv-s-more', moreSheet);
+  const simpleBox = h('div', { class: 'nv-simple' }, E.richtaBtn, h('div', { class: 'nv-srow' }, E.markBtn, E.delayBtn), E.ctxBtn, h('div', { class: 'nv-srow' }, E.undoBtn, E.moreBtn));
+  function ctxRun() {
+    if (!live || !live.started) act('start');
+    else if (live.alert && live.alert.kind === 'missed_turn') act('here', { n: live.alert.n });
+    else if (live.alert && live.alert.kind === 'offcourse') { off = false; syncOff(); act('offcourse', { on: false }); }
+  }
+  E.coachTitle = h('div', { class: 'nv-coach-title' }, '');
+  E.coachText = h('div', { class: 'nv-coach-text' }, '');
+  E.coach = h('div', { class: 'nv-coach', role: 'status', 'aria-live': 'polite' }, E.coachTitle, E.coachText);
+  E.toast = h('div', { class: 'nv-toast', hidden: true });
+
   const right = h('div', { class: 'nv-right' },
     h('div', { class: 'nv-top' }, E.clock, h('div', { class: 'nv-delta' }, E.dBig, E.dWord)),
-    E.transit, E.next, statsRow, buttons, status, logPanel);
-  const root = h('div', { class: 'nv-root' }, E.alert, h('div', { class: 'nv-cols' }, E.list, right));
+    E.transit, E.next, statsRow, simpleBox, buttons, status, logPanel);
+  const root = h('div', { class: `nv-root nv-mode-${mode}` }, E.alert, E.coach, E.toast, h('div', { class: 'nv-cols' }, E.list, right));
   container.appendChild(root);
+
+  // MORE: the tools needed now and then, each with one line on when to use it.
+  function moreSheet() {
+    const item = (label, note, fn, cls = '') => h('div', { class: 'nv-more-item' },
+      h('button', { class: `nv-bigbtn ${cls}`, onclick: () => { closeSheet(); fn(); } }, label), h('div', { class: 'nv-more-note' }, note));
+    openSheet('More tools',
+      h('div', { class: 'nv-more-lim' }, h('div', { class: 'nv-more-note' }, 'Speed limit sign (optional): the app never asks for more than this.'),
+        h('div', { class: 'nv-limrow' }, [25, 35, 45, 55].map((m) => h('button', { class: 'nv-bigbtn nv-lim', onclick: () => { closeSheet(); act('limit', { mph: m }); } }, String(m))),
+          h('button', { class: 'nv-bigbtn nv-lim', onclick: limitOtherSheet }, 'other'))),
+      h('div', { class: 'nv-more-grid' },
+        item('End odo check', 'Once, at the end of the odometer check, if MARK didn’t catch it.', () => confirmSheet('End odometer check?', 'End check', () => act('odo_end'))),
+        item(off ? 'Back on course' : 'Off course', 'You took a wrong road: tap now, then again when you’re back where you left the route.', () => { off = !off; syncOff(); act('offcourse', { on: off }); }),
+        item('Restart time', 'Fix a restart time that doesn’t match Richta’s.', restartSheet),
+        item('Staffed control', 'Only if a person at a control gives you an out time.', checkpointSheet),
+        item('Rules', 'The rules read from the general instructions.', rulesSheet),
+        ...moreItems.map((m) => item(m.label, m.note, m.run))),
+      h('div', { class: 'nv-sheet-btns' }, h('button', { class: 'nv-bigbtn', onclick: closeSheet }, 'Close')));
+  }
+
+  let toastTimer = null;
+  function toast(text) {
+    if (!text) return;
+    E.toast.textContent = text; E.toast.hidden = false;
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => { E.toast.hidden = true; }, 6000);
+  }
+  function setMode(m) { root.classList.remove('nv-mode-simple', 'nv-mode-full'); root.classList.add(`nv-mode-${m}`); }
 
   // ---------- list ----------
   function buildRows() {
@@ -237,6 +286,17 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
     E.k.textContent = 'k ' + (hh.k != null ? hh.k.toFixed(4) : '--');
     E.resync.textContent = hh.last_resync ? 'resync ' + hh.last_resync : '';
     markCurrent(l.next ? l.next.n : null);
+    // The coach line, and the button it points at.
+    const c = coach(l, { rows: ins, startTod });
+    if (E.coachTitle.textContent !== c.title) E.coachTitle.textContent = c.title;
+    if (E.coachText.textContent !== c.text) E.coachText.textContent = c.text;
+    E.coach.className = `nv-coach nv-tone-${c.tone}`;
+    const ctx = !l.started ? ['START', 'as you leave the start line'] : l.alert && (l.alert.kind === 'missed_turn' || l.alert.kind === 'offcourse') ? ['BACK ON ROUTE', 'tap as you rejoin the route'] : null;
+    E.ctxBtn.style.visibility = ctx ? '' : 'hidden';
+    if (ctx && E.ctxBtn.firstChild.textContent !== ctx[0]) { E.ctxBtn.firstChild.textContent = ctx[0]; E.ctxBtn.lastChild.textContent = ctx[1]; }
+    E.richtaBtn.classList.toggle('nv-hint', c.act === 'richta');
+    E.markBtn.classList.toggle('nv-hint', c.act === 'mark');
+    E.ctxBtn.classList.toggle('nv-hint', !!ctx && (c.act === 'start' || c.act === 'back'));
     const nx = l.next, key = nx ? nx.n + '|' + nx.text : '';
     if (key !== nextKey) {
       nextKey = key; clear(E.next);
@@ -254,5 +314,5 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
   function destroy() { root.remove(); }
 
   buildRows(); syncOff();
-  return { update, setRoute, setLog, destroy };
+  return { update, setRoute, setLog, toast, setMode, destroy };
 }
