@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0d10">
+  <title>Rally Computer</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/app.css">
+  <link rel="stylesheet" href="css/drive.css">
+  <style>
+    body { margin: 0; background: var(--bg); color: var(--text); font: 18px system-ui, sans-serif; }
+    #app { min-height: 100dvh; }
+    .home { max-width: 720px; margin: 0 auto; padding: 16px; display: grid; gap: 12px; }
+    .home h1 { font-size: 24px; margin: 4px 0 0; }
+    .step { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 16px; background: var(--panel);
+      border: 1px solid var(--line); border-radius: 12px; }
+    .step b { font-size: 20px; }
+    .step .muted { font-size: 15px; }
+    .home button, .topbar button { min-height: 56px; padding: 0 18px; border-radius: 10px; border: 1px solid var(--line);
+      background: #1d242c; color: var(--text); font-size: 18px; }
+    .home button.primary { background: var(--good); color: #06240f; border-color: var(--good); font-weight: 700; }
+    .topbar { display: flex; gap: 8px; align-items: center; padding: 6px 8px; background: var(--panel); border-bottom: 1px solid var(--line); }
+    .topbar .sp { flex: 1; }
+    .drive { display: grid; grid-template-columns: 40% 60%; height: calc(100dvh - 70px); }
+    .drive.driver-only { grid-template-columns: 100%; }
+    .drive.driver-only .navpane { display: none; }
+    .drive > div { min-height: 0; overflow: hidden; position: relative; }
+    /* The screens size to the viewport on their own; inside the split they fill their pane instead. */
+    .drive .dv-root, .drive .nv-root { height: 100%; }
+    .drive .dv-big { font-size: min(30vh, 16vw); }
+    .drive.driver-only .dv-big { font-size: 34vh; }
+    .drive .nv-clock { font-size: clamp(1.8rem, 3.2vw, 3.6rem); }
+    .drive .nv-dbig { font-size: clamp(1.6rem, 2.6vw, 3rem); }
+    .drive .nv-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    /* Driver pane in the split: size the bottom row by the pane width, not the viewport height. */
+    .drive:not(.driver-only) .dv-target, .drive:not(.driver-only) .dv-icon { font-size: min(14vh, 6.5vw); }
+    .drive:not(.driver-only) .dv-dist { font-size: min(8vh, 3.6vw); }
+    .drive:not(.driver-only) .dv-speed { flex-basis: 38%; }
+    @media (orientation: portrait) {
+      .drive { grid-template-columns: 100%; grid-template-rows: 38% 62%; }
+      .drive .dv-big { font-size: 20vh; }
+    }
+    .log { padding: 12px; font: 14px ui-monospace, monospace; white-space: pre-wrap; }
+    .note { color: var(--watch); }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
