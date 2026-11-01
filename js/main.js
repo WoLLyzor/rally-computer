@@ -40,7 +40,10 @@ function setRoute(instructions, extra = {}) {
   if (!ins.some((r) => r.section > 1)) assignSections(ins);
   S.route = { ...(S.route || {}), ...extra, instructions: ins, savedAt: Date.now() };
   store.set('route', S.route);
-  if (live) live.setRoute(ins);
+  if (live) {
+    live.setRoute(ins, { keepPlace: !extra.source });   // a fix to one line mid-rally keeps the place
+    if (live.started) saveLive();
+  }
 }
 const verifiedCount = () => (S.route?.instructions || []).filter((r) => r.verified).length;
 
@@ -72,12 +75,12 @@ async function connectRaceBox() {
 async function keepAwake() {
   try { if ('wakeLock' in navigator && !wakeLock) { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => { wakeLock = null; }); } } catch { /* not allowed */ }
 }
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && location.hash === '#drive') keepAwake(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && (location.hash === '#drive' || live?.started)) keepAwake(); });
 listenButtons((b) => { S.status.lastKey = b; if (live && location.hash === '#drive') live.action(b === 'mark' ? 'mark' : 'ack'); }, (k) => { S.status.lastKey = k; });
 
 // ---------- screens ----------
 function teardown() {
-  clearInterval(S.timer); S.timer = null;
+  clearInterval(S.timer); S.timer = null; S.driving = false;
   if (S.view?.destroy) S.view.destroy();
   S.view = null;
   clear(app);
@@ -217,15 +220,25 @@ function showDrive() {
     onAction: (name, p) => { live.action(name, p); nav.setRoute(live.schedule.rows, live.schedule.table(), digest); } });
   S.view = { destroy: () => { driver.destroy(); nav.destroy(); } };
   let k = 0;
+  S.driving = true;
   S.timer = setInterval(() => {
     const st = live.tick();
     driver.update(st); nav.update(st);
     if (++k % 10 === 0) {
-      store.set('live', { ...live.snapshot(), routeSavedAt: S.route?.savedAt });
+      saveLive();
       nav.setLog(live.log.slice(-200).reverse());
     }
   }, 100);
 }
+function saveLive() { store.set('live', { ...live.snapshot(), routeSavedAt: S.route?.savedAt }); }
+// Away from the Drive screen (Home, Verify, Log) a started rally keeps running: voice cues, route
+// progress and the crash-safe save don't depend on which screen is open.
+let bgK = 0;
+setInterval(() => {
+  if (!live?.started || S.driving) return;
+  live.tick();
+  if (++bgK % 10 === 0) saveLive();
+}, 100);
 
 function showLog() {
   app.append(topbar('Log'));

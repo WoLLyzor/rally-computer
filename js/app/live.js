@@ -37,7 +37,17 @@ export class LiveLoop {
     this.onLog(e);
   }
 
-  setRoute(instructions) { this.instructions = instructions; this.progress = null; this.rebuild(); }
+  // keepPlace: a line edited or checked during the drive keeps the place in the route; a new route starts over.
+  setRoute(instructions, { keepPlace = false } = {}) {
+    const keep = keepPlace && this.started && this.progress ? { n: this.progress.next?.n ?? null, done: [...this.progress.done] } : null;
+    this.instructions = instructions; this.progress = null; this.rebuild();
+    if (keep) {
+      const i = this.schedule.rows.findIndex((r) => r.n === keep.n);
+      this.progress.idx = i >= 0 ? i : this.schedule.rows.length;
+      this.progress.done = new Set(keep.done);
+      this.progress.calibrated = this.engine.calibrated;
+    }
+  }
 
   rebuild() {
     const st = this.settings;
@@ -246,6 +256,10 @@ export class LiveLoop {
         if (u.kind === 'mark') delete this.ev.marks[u.n];
         if (u.kind === 'checkpoint') { if (u.which === 'out') delete this.ev.outTimes[u.n]; else delete this.ev.inTimes[u.n]; }
         if (u.kind === 'here') { e.theta = u.theta; e.Ptheta = u.Ptheta; this.progress.idx = u.idx; this.progress.done = new Set(u.done); this.recover = u.recover; }
+        if (u.kind === 'calibrate') {
+          Object.assign(e, { theta: u.theta, Ptheta: u.Ptheta, calibrated: u.calibrated });
+          this.calibratedAt = u.calibratedAt; this.progress.idx = u.idx; this.progress.done = new Set(u.done); this.calWarn = null;
+        }
         this.rebuild(); this.addLog(`Undo ${u.kind}`);
         break;
       }
@@ -254,11 +268,21 @@ export class LiveLoop {
   }
 
   calibrateAt(row, sEnd) {
-    const K = this.engine.calibrate({ omStart: 0, sStart: this.startS, omEnd: row.D, sEnd });
+    const e = this.engine;
+    const prev = { theta: [...e.theta], Ptheta: e.Ptheta.map((x) => [...x]), calibrated: e.calibrated, calibratedAt: this.calibratedAt, idx: this.progress.idx, done: [...this.progress.done] };
+    const K = e.calibrate({ omStart: 0, sStart: this.startS, omEnd: row.D, sEnd });
     if (K === null) { this.addLog('Odometer check too short to calibrate'); return; }
+    this.undo.push({ kind: 'calibrate', ...prev });
     this.calibratedAt = row.n;
     this.progress.jump(this.schedule.rows.find((r) => r.n > row.n)?.n ?? row.n);
     this.addLog(`Odometer check: factor ${K.toFixed(4)} (official ÷ measured) over ${row.D.toFixed(2)} mi`);
+    // GPS distance and the rallymaster's odometer normally agree within a few percent; much more
+    // usually means End odo check was tapped at the wrong place.
+    if (Math.abs(K - 1) > 0.05) {
+      this.calWarn = { K, until: performance.now() / 1000 + 90 };
+      this.addLog(`Factor ${K.toFixed(3)} is ${((K - 1) * 100).toFixed(1)}% off: if End odo check was not tapped at #${row.n}'s point, Undo last takes it back`);
+      this.voice?.speak('Check the odometer factor. It looks wrong.', { key: `calwarn:${row.n}:${Math.round(sEnd)}`, alert: true });
+    } else this.calWarn = null;
   }
 
   // ---- 10 Hz state ----
@@ -319,6 +343,7 @@ export class LiveLoop {
     if (pr.alert) alert = { kind: 'missed_turn', text: `Missed turn? Check #${pr.alert.n} at ${fmtOm(pr.alert.D - (sch.bases[sch.rows.find((r) => r.n === pr.alert.n)?.section] ?? 0))}` };
     if (this.offStart) alert = { kind: 'offcourse', text: `Off course since ${fmtOm(this.offStart.D - base)} · ${((e.s - this.offStart.s) / 1609.344).toFixed(2)} mi` };
     else if (this.recover) alert = { kind: 'recovering', text: `Paused ${this.recover.gapS} s: distance may be up to ${this.recover.eHi.toFixed(2)} mi short. Tap the instruction you're at (or wait for the next turn).` };
+    if (this.calWarn && tn < this.calWarn.until) alert = alert ?? { kind: 'calibration', text: `Odometer factor ${this.calWarn.K.toFixed(3)} looks wrong (${((this.calWarn.K - 1) * 100).toFixed(1)}% off). Tapped End odo check at the wrong place? Then Undo last.` };
     if (e.health.racebox === 'lost' && e.health.gps !== 'ok' && this.started) alert = alert ?? { kind: 'gps_lost', text: 'No GPS: distance is estimated' };
 
     this.cues({ D, next, delta, speak: said.speak, display: said.display, cap: adv?.cap ?? null, alert, hold });
