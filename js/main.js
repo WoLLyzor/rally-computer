@@ -12,6 +12,8 @@ import { store, loadSettings, saveSettings } from './app/store.js';
 import { RallyClock } from './app/clock.js';
 import { Voice } from './app/voice.js';
 import { LiveLoop } from './app/live.js';
+import { segmentTable } from './core/timing.js';
+import { renderTimes } from './ui/times.js';
 import { prepareImage } from './app/image.js';
 import { RaceBox } from './sensors/racebox.js';
 import { TabletGps, listenButtons } from './sensors/gps.js';
@@ -106,7 +108,7 @@ function showHome() {
       h('button', { onclick: () => { location.hash = '#diag'; } }, 'Device check'),
       h('button', { onclick: () => { location.hash = '#settings'; } }, 'Settings'),
       h('button', { onclick: () => { location.hash = '#log'; } }, 'Log'),
-      h('button', { onclick: () => { location.hash = '#paper'; } }, 'Paper backup table'),
+      h('button', { onclick: () => { location.hash = '#paper'; } }, 'Time table'),
       h('button', { onclick: () => { if (confirm('Clear the live rally state (distance, marks, checkpoint times)? The route stays.')) { store.del('live'); location.reload(); } } }, 'Reset rally state')),
   ));
 }
@@ -276,13 +278,14 @@ function showLog() {
     voice.log.slice(-50).map((e) => `${new Date(e.t).toLocaleTimeString()}  ${e.text}`).join('\n')));
 }
 
+// Time table: the expected times from the instructions, segment by segment (also the paper backup).
 function showPaper() {
   ensureLive();
-  app.append(topbar('Paper backup', [h('button', { onclick: () => print() }, 'Print')]));
-  const rows = live.schedule.table();
-  const unit = S.settings.timingUnit;
-  app.append(h('div', { class: 'log' }, 'Perfect times assume no TAs and out time = in time + 2:00 at open controls.\n\n',
-    rows.map((r) => `#${String(r.n).padStart(3)}  OM ${r.om === null ? '  —  ' : r.om.toFixed(2).padStart(6)}  CAST ${r.cast ?? '—'}  arrive ${fmtTod(r.T_arrive, unit)}  leave ${fmtTod(r.T_leave, unit)}`).join('\n')));
+  app.append(topbar('Time table', [h('button', { onclick: () => print() }, 'Print')]));
+  const st = S.settings, box = h('div', {});
+  app.append(box);
+  const segs = segmentTable(S.route?.instructions || [], { startTod: clockStart(), carNumber: st.carNumber, marks: live.ev.marks, live: live.ev });
+  renderTimes(box, segs, { unit: st.timingUnit, carNumber: st.carNumber, tas: live.ev.tas.length });
 }
 
 // Pre-rally device check: everything the car setup depends on, in plain words.

@@ -16,7 +16,7 @@ export function blankInstruction(n = null) {
     text: '', action: 'note', dir: null, cue: null,
     onto: null, sign_text: null, landmark: null, count: null,
     cast_mph: null, pause_s: 0, gain_s: 0, zone: null, control: null,
-    reset_odo: false, odo_check_end: false, restart_tod: null, transit_s: null,
+    reset_odo: false, odo_check_end: false, restart_tod: null, restart_any: null, transit_s: null,
     sign_rel: null, sign_side: null, note: null, pause_text: null, gain_text: null, zone_edge: null,
     src: null, confidence: 1, verified: false, review: [],
   };

@@ -170,6 +170,8 @@ export function explain(ins, { glossary = null } = {}) {
     sentences.push([{ t: 'Leave at ' }, { t: ins.restart_tod, k: 'num' }, { t: ins.restart_plus_car ? ' plus your car number in minutes' : '' }]);
     speech.push(`restart at ${ins.restart_tod.replace(/:00$/, '')}`);
   }
+  if (ins.restart_any === 'minute') { sentences.push([{ t: 'Restart: leave at the top of any minute you choose (cross the line as the clock shows ' }, { t: ':00', k: 'num' }, { t: ')' }]); speech.push('restart on any minute'); }
+  if (ins.restart_any === 'flying') { sentences.push([{ t: 'Flying restart: timing starts as you cross the line' }]); speech.push('flying restart'); }
   if (!sentences.length) { sentences.push([{ t: ins.text || '' }]); speech.push(speakable(ins.text)); }
   // A note that only repeats something explained above (odometer check, zone edges, the transit allowance) is dropped.
   const repeats = (n) => (/\bODO(?:METER)?\s+CHECK\b/i.test(n) && (ins.odo_check_start || ins.odo_check_end))

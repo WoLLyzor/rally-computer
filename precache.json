@@ -29,6 +29,7 @@
  "js/ui/navigator.js",
  "js/ui/scan.js",
  "js/ui/settings.js",
+ "js/ui/times.js",
  "js/ui/verify.js",
  "manifest.webmanifest",
  "vendor/anthropic-sdk.mjs"

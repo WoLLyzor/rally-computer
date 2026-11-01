@@ -246,6 +246,7 @@ export function mergePage(dataA, dataB, page) {
     if (p.odo_check_start) a.odo_check_start = true;
     if (p.odo_check_end) a.odo_check_end = true;
     if (p.restart_plus_car) a.restart_plus_car = true;
+    if (p.restart_any && !a.restart_tod) a.restart_any = p.restart_any;
     if (a.transit_s == null && p.transit_s != null) a.transit_s = p.transit_s;
     if (p.confidence >= 0.85) {
       for (const f of INTERP_FIELDS) {

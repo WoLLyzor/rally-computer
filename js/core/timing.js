@@ -50,7 +50,7 @@ export function buildSchedule(instructions, opts = {}) {
       let tod = parseTod(r.restart_tod);
       if (r.restart_plus_car) tod += 60 * carNumber;
       push('restart', { tod });
-    }
+    } else if (r.restart_any && !(live.restarts || []).some((rs) => Math.abs(rs.D - r.D) <= 0.1)) push('restart', { tod: null });
     if (r.pause_s > 0) push('pause', { s: r.pause_s });
     if (r.gain_s > 0) push('gain', { s: r.gain_s });
     if (r.cast_mph > 0) push('cast', { mph: r.cast_mph });
@@ -169,7 +169,7 @@ export function buildSchedule(instructions, opts = {}) {
 }
 
 function hasTimingEffect(r) {
-  return r.cast_mph > 0 || r.pause_s > 0 || r.gain_s > 0 || r.restart_tod || r.action === 'control' || r.zone === 'transit';
+  return r.cast_mph > 0 || r.pause_s > 0 || r.gain_s > 0 || r.restart_tod || r.restart_any || r.action === 'control' || r.zone === 'transit';
 }
 
 // Delta in seconds: positive = late (design §7: delta = now − perfect time at the current distance).
@@ -181,6 +181,44 @@ export function deltaAt(schedule, D, nowTod) {
 // Start time of day for a car: base + car number minutes (rally_guide §5: 11:00 + car number).
 export function carStartTod(baseTod, carNumber) {
   return (typeof baseTod === 'string' ? parseTod(baseTod) : baseTod) + 60 * carNumber;
+}
+
+// The expected times from the instructions, segment by segment. A segment runs from the start, a restart
+// or a control's out time to the next one. Elapsed times count from the segment's start, so they hold even
+// where the crew picks the start (a restart on any minute); time of day is filled in where the start is
+// known. opts as buildSchedule (live: the crew's restarts, out times and TAs so far).
+// Returns [{ k, start: { n, kind, tod }, rows: [{ n, om, section, D, fromMi, cast, elapsed, elapsedLeave,
+// tod, todLeave, first, last }], end: last row with a mileage }].
+export function segmentTable(instructions, opts = {}) {
+  const abs = buildSchedule(instructions, opts);
+  const rows = abs.rows;
+  if (!rows.length) return [];
+  const isControl = (r) => r.action === 'control' && (r.control === 'open' || r.control === 'diyc');
+  const starts = [{ i: 0, n: rows[0].n, D: rows[0].D ?? opts.startD ?? 0, kind: 'start' }];
+  rows.forEach((r, i) => {
+    if (i === 0 || r.D === null) return;
+    const kind = r.restart_tod ? 'restart' : r.restart_any ? r.restart_any : isControl(r) ? 'control' : null;
+    if (kind) starts.push({ i, n: r.n, D: r.D, kind });
+  });
+  // Same instructions with every segment start set to 0: perfect times become times from the start.
+  const live = opts.live || {};
+  const rel = buildSchedule(instructions, { ...opts, startTod: 0, live: { ...live, restarts: [...(live.restarts || []), ...starts.slice(1).map((s) => ({ D: s.D, tod: 0 }))] } });
+  const A = new Map(abs.table().map((x) => [x.n, x])), R = new Map(rel.table().map((x) => [x.n, x]));
+  return starts.map((s, k) => {
+    const next = starts[k + 1];
+    const from = s.kind === 'control' ? s.i + 1 : s.i;                 // a control ends the leg before it
+    const to = next ? (next.kind === 'control' ? next.i : next.i - 1) : rows.length - 1;
+    // Start time of day: printed (restart, out time), or the crew's restart once recorded, else unknown.
+    const chosen = s.kind === 'minute' || s.kind === 'flying' ? (live.restarts || []).find((x) => Math.abs(x.D - s.D) <= 0.1) : null;
+    const startTod = chosen ? parseTod(chosen.tod) : A.get(s.n)?.T_leave ?? null;
+    const seg = rows.slice(from, to + 1).map((r, j) => {
+      const a = A.get(r.n), b = R.get(r.n), first = j === 0 && s.kind !== 'control';
+      return { n: r.n, om: r.om, section: r.section, D: r.D, fromMi: r.D === null ? null : r.D - s.D, cast: a.cast,
+        elapsed: first ? 0 : b.T_arrive, elapsedLeave: first ? 0 : b.T_leave, tod: first ? startTod : a.T_arrive, todLeave: first ? startTod : a.T_leave, first, row: r };
+    });
+    const end = [...seg].reverse().find((x) => x.D !== null) ?? null;
+    return { k: k + 1, start: { n: s.n, kind: s.kind, tod: startTod, row: rows[s.i] }, rows: seg, end };
+  });
 }
 
 // Richta Competitor's time allowance (Milwaukee SCCA and PCA guides; Alcan setup sheet): TA+ steps the

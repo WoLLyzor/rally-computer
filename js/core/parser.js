@@ -79,6 +79,10 @@ const ZONE_END_RE = /\b(?:(?:END|ENDS|EXIT|LEAVE)\s+(?:OF\s+)?(?:THE\s+)?(FREE|T
 const CONTROL_RE = /\b(DIYC|DO[-\s]IT[-\s]YOURSELF(?:\s+CONTROL)?|GPS\s+CONTROL|PASSAGE\s+CONTROL|OPEN\s+CONTROL|CHECKPOINT|CHECK\s+POINT|TIME\s+CONTROL|CONTROL)\b/;
 const RESET_RE = /(?:\/\s*0\.00\b|\b(?:RESET|ZERO|RE-?ZERO)\s+(?:YOUR\s+|THE\s+)?(?:ODO(?:METER)?|TRIP)\b|\bODO(?:METER)?\s+(?:RESET|TO\s+ZERO)\b)/;
 const ODO_END_RE = /\b(?:END|ENDS)\s+(?:OF\s+)?(?:THE\s+)?ODO(?:METER)?\s*(?:CHECK|CAL(?:IBRATION)?)\b/;
+// A restart whose time the crew chooses: at the top of any minute (Richta "restart at the top of any
+// minute"), or flying (timing starts as the car crosses the line).
+const RESTART_MINUTE_RE = /\b(?:RE)?START\b[^.;]*?\bTOP\s+OF\s+(?:ANY|A|THE|EACH|NEXT)?\s*MINUTE\b|\b(?:(?:RE)?START|LEAVE|DEPART|GO)\s+(?:AT|ON)\s+(?:THE\s+)?(?:TOP\s+OF\s+)?(?:ANY|A|THE\s+NEXT)\s+(?:WHOLE\s+|FULL\s+)?MINUTE\b/;
+const RESTART_FLYING_RE = /\bFLYING\s+(?:RE)?START\b|\b(?:(?:RE)?START|LEAVE|GO)\s+WHEN\s+(?:YOU(?:'RE|\s+ARE)\s+)?READY\b/;
 const TOD_RE = /\b(?:RESTART|LEAVE|DEPART|OUT\s+TIME|ARRIVE)\s+(?:AT\s+)?(\d{1,2}:\d{2}(?::\d{2}|\.\d{2})?)(\s*\+\s*(?:YOUR\s+)?CAR\s*(?:NO\.?|NUMBER|#)(?:\s*MINUTES?)?)?/;
 const TRANSIT_ALLOW_RE = /\b(?:ALLOW|ALLOWED|TRANSIT\s+TIME)\s*(?:OF\s+)?(\d{1,2}:\d{2}|\d+(?:\.\d+)?)\s*(MINUTES?|MINS?|SECONDS?|SECS?)?/;
 const NOTE_RE = /\b(CAUTION|NOTE|ONE\s+LANE|SLOW|DANGER|WATCH|NARROW|OBSERVE|ATTENTION)\b/;
@@ -178,7 +182,7 @@ export function parseBody(bodyRaw) {
   const up = body.toUpperCase();
   const r = { action: 'note', dir: null, cue: null, onto: null, sign_text: null, landmark: null, count: null,
     cast_mph: null, pause_s: 0, gain_s: 0, zone: null, control: null, reset_odo: false, odo_check_end: false,
-    restart_tod: null, restart_plus_car: false, transit_s: null, sign_rel: null, sign_side: paren.side, note: null,
+    restart_tod: null, restart_plus_car: false, restart_any: null, transit_s: null, sign_rel: null, sign_side: paren.side, note: null,
     pause_text: null, zone_edge: null };
   const notes = [...paren.notes];
   let penalty = 0;
@@ -267,6 +271,9 @@ export function parseBody(bodyRaw) {
     r.restart_tod = /^\d{1,2}:\d{2}$/.test(t) ? `${t.padStart(5, '0')}:00` : t;
     r.restart_plus_car = !!tod[2];
     eat(tod);
+  } else {
+    const rm = up.match(RESTART_MINUTE_RE), rf = rm ? null : up.match(RESTART_FLYING_RE);
+    if (rm || rf) { r.restart_any = rm ? 'minute' : 'flying'; eat(rm || rf); }
   }
   const ta = up.match(TRANSIT_ALLOW_RE);
   if (ta && (r.zone === 'transit' || /TRANSIT/.test(up))) {
@@ -300,7 +307,7 @@ export function parseBody(bodyRaw) {
 
   // Confidence from leftover words.
   const leftovers = consumed.replace(/["'(),.;:]/g, ' ').split(/\s+/).filter((w) => w && !FILLER.has(w) && !/^\d+(\.\d+)?$/.test(w));
-  const noteLike = NOTE_RE.test(up) || (r.action === 'note' && (notes.length > 0 || r.odo_check_start || r.odo_check_end));
+  const noteLike = NOTE_RE.test(up) || (r.action === 'note' && (notes.length > 0 || r.odo_check_start || r.odo_check_end || r.restart_tod || r.restart_any));
   if (r.action === 'note' && !noteLike) penalty += 0.45;
   if (r.action === 'note' && noteLike) penalty += 0.1;
   if (r.action !== 'note') penalty += Math.min(0.4, 0.06 * leftovers.length);

@@ -285,7 +285,7 @@ export class LiveLoop {
         const u = this.undo.pop();
         if (!u) break;
         if (u.kind === 'ta') this.ev.tas.pop();
-        if (u.kind === 'restart') this.ev.restarts.pop();
+        if (u.kind === 'restart') { this.ev.restarts.pop(); if (u.auto) (this.noAuto ??= new Set()).add(u.auto); }   // an undone automatic restart stays undone
         if (u.kind === 'mark') delete this.ev.marks[u.n];
         if (u.kind === 'checkpoint') { if (u.which === 'out') delete this.ev.outTimes[u.n]; else delete this.ev.inTimes[u.n]; }
         if (u.kind === 'here') { e.theta = u.theta; e.Ptheta = u.Ptheta; this.progress.idx = u.idx; this.progress.done = new Set(u.done); this.recover = u.recover; }
@@ -328,6 +328,19 @@ export class LiveLoop {
     const now = this.clock.nowTod();
     const D = e.D;
     if (this.progress) this.progress.calibrated = e.calibrated;
+    // A restart with no printed time (on any minute you choose, or flying) is counted as the car crosses its
+    // point: at the nearest whole minute, or the exact time for a flying restart. It's said aloud so the
+    // crew can check it against Richta's out time; the Restart button or Undo last corrects it.
+    if (this.started && !this.recover && e.v > 2) {
+      const ra = sch.rows.find((r) => r.restart_any && r.D !== null && D >= r.D && D < r.D + 0.2 && !this.noAuto?.has(r.n) && !this.ev.restarts.some((x) => Math.abs(x.D - r.D) <= 0.1));
+      if (ra) {
+        const t = ra.restart_any === 'minute' ? Math.round(now / 60) * 60 : now;
+        this.ev.restarts.push({ D: ra.D, tod: t, n: ra.n }); this.undo.push({ kind: 'restart', auto: ra.n }); this.rebuild();
+        this.addLog(`Restart #${ra.n} counted at ${fmtTod(t)} (${ra.restart_any === 'minute' ? 'the nearest minute' : 'flying'}): check it against Richta's out time`, { claim: true });
+        const hh = Math.floor(t / 3600) % 12 || 12, mm = Math.floor(t / 60) % 60, ss = Math.floor(t % 60);
+        this.voice?.speak(`Restart counted at ${hh} ${String(mm).padStart(2, '0')}${ra.restart_any === 'flying' ? ` and ${ss} seconds` : ''}.`, { key: `restart:${ra.n}`, alert: true });
+      }
+    }
     const pr = this.started ? this.progress.update(D) : { next: sch.rows[0] ?? null, alert: null };
     if (this.recover && pr.alert) { this.progress.clearAlert(); pr.alert = null; }   // the distance itself is in doubt
     // A turn the gyro missed (a gap in its data, an odd junction): the GPS course across the point
