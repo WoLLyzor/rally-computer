@@ -46,6 +46,7 @@ export class Voice {
     this.lastText = text;
     this.lastSpokeAt = performance.now() / 1000;
     this.log.push({ t: Date.now(), text });
+    this.onSay?.(text);
     if (!this.enabled || !this.ok) return false;
     if (alert) speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);

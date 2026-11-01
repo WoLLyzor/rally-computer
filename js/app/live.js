@@ -43,12 +43,33 @@ export class LiveLoop {
     this.lastFix = null; this.pendingGap = null;
     this.spokenSpeed = null; this.offSince = null; this.pauseTaken = new Set();
     this.log = []; this.track = []; this.trackT = null;   // track: 1 s GPS points for the exported log
+    this.journal = [];   // one timeline for finding friction: crew actions, what the app said and showed, state every 10 s
   }
 
   addLog(text, extra = {}) {
     const e = { t_s: this.clock.nowTod(), text, ...extra };
     this.log.push(e); if (this.log.length > 2000) this.log.shift();
+    this.jot('log', { text });
     this.onLog(e);
+  }
+  // A journal entry: k is the kind (act, s for a state sample, ui, say, log, mic, alert, screen, set, sensor, open, vis).
+  jot(k, data = {}) {
+    this.journal.push({ t: Math.round(this.clock.nowTod() * 10) / 10, k, ...data });
+    if (this.journal.length > 8000) this.journal.splice(0, 500);
+  }
+  // The app's state in brief (from the last tick): distance, place, speeds, early/late, zone.
+  brief() {
+    const s = this.state, r1 = (x, k = 1) => (x == null || !Number.isFinite(x) ? null : Math.round(x * 10 ** k) / 10 ** k);
+    if (!s) return {};
+    return { D: r1(s.D, 3), om: r1(s.d_om, 2), nx: s.next?.n ?? null, v: r1(s.speed_mph), c: s.cast_mph ?? null, tg: r1(s.target_mph, 0), av: r1(s.avg_mph),
+      d: r1(s.delta_s), z: s.zone === 'transit' ? 'T' : s.waiting ? 'W' : s.cast_mph ? 'Z' : '-', rz: s.richta_zone ? `${s.richta_zone.start ? '+' : '-'}${s.richta_zone.n}` : null, rec: s.recovering ? 1 : 0 };
+  }
+  // A crew action (a tap, or a beep the microphone heard): journaled with the state before it and what the app made of it.
+  userAction(name, p = {}, via = 'ui') {
+    const s = this.brief(), n0 = this.log.length;
+    this.action(name, p);
+    const slim = Object.fromEntries(Object.entries(p).filter(([, x]) => x == null || typeof x !== 'object').map(([k, x]) => [k, typeof x === 'number' ? Math.round(x * 100) / 100 : x]));
+    this.jot('act', { a: name, p: slim, via, s, r: this.log.slice(n0).map((x) => x.text) });
   }
 
   // keepPlace: a line edited or checked during the drive keeps the place in the route; a new route starts over.
@@ -773,6 +794,14 @@ export class LiveLoop {
       recovering: !!this.recover, richta_zone: zh ? { n: zh.row.n, start: zh.start, mi: zh.row.D - D } : null, avg_mph: avg, transit_end_n: transitRow?.n ?? null, ta_leg_s: taLeg, ta_max_s: st.taMax_s ?? 1170, leg_style: st.legStyle ?? 'restart',
       map_hint: this.started && !sch.inTransit(D) ? this.mapHint ?? null : null,   // set by the map: the car left a confident route guess
     };
+    // The journal: what the crew was shown (an alert), and the state every 10 s with where the car was.
+    const ak = alert?.kind ?? null;
+    if (ak !== this.lastAlertK) { this.lastAlertK = ak; if (ak) this.jot('alert', { kind: ak, text: alert.text }); }
+    if (this.started && !(now - (this.lastSampleT ?? -Infinity) < 10)) {
+      this.lastSampleT = now;
+      const f = this.lastFix;
+      this.jot('s', { ...this.brief(), ...(f ? { lat: Math.round(f.lat * 1e5) / 1e5, lon: Math.round(f.lon * 1e5) / 1e5 } : {}) });
+    }
     return this.state;
   }
 

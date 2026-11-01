@@ -7,7 +7,7 @@ import { mountDriver } from './ui/driver.js';
 import { mountNavigator } from './ui/navigator.js';
 import { mountMap } from './ui/map.js';
 import { parseText, reparse } from './core/parser.js';
-import { runChecks, computeLegs, assignSections, normalizeInstruction, fmtTod } from './core/instruction.js';
+import { runChecks, computeLegs, assignSections, normalizeInstruction, fmtTod, zoneEdge } from './core/instruction.js';
 import { extractPages, buildDigest } from './core/extract.js';
 import { store, loadSettings, saveSettings } from './app/store.js';
 import { RallyClock } from './app/clock.js';
@@ -37,8 +37,9 @@ const listener = new RichtaListener({
   isSpeaking: () => typeof speechSynthesis !== 'undefined' && speechSynthesis.speaking,
   onBeep: () => {
     ensureLive();
+    live.jot('mic', listener.det?.lastHit ?? {});   // what it heard: pitch, loudness over the background, length
     const n0 = live.log.length;
-    live.action('richta', { via: 'mic' });
+    live.userAction('richta', { via: 'mic' }, 'mic');
     const fresh = live.log.slice(n0), last = fresh[fresh.length - 1]?.text ?? '';
     if (/ignored|not counted twice/.test(last)) return;   // not where Richta beeps, or the same beep again: stay quiet
     voice.speak('Heard Richta.', { alert: false });
@@ -108,17 +109,34 @@ function ensureLive() {
   live = new LiveLoop({ settings: S.settings, clock, voice });
   live.setRoute(S.route?.instructions || []);
   const snap = store.get('live', null);
-  if (snap && snap.routeSavedAt === S.route?.savedAt && Date.now() - snap.wallMs < 6 * 3600e3) live.restore(snap);
+  const restored = !!(snap && snap.routeSavedAt === S.route?.savedAt && Date.now() - snap.wallMs < 6 * 3600e3);
+  if (restored) {
+    live.restore(snap);
+    // The journal, events and checkpoint scores survive a reload of the same rally.
+    const j = store.get('journal', null);
+    if (j && j.routeSavedAt === S.route?.savedAt) { live.journal = [...(j.journal || []), ...live.journal]; live.log = [...(j.log || []), ...live.log]; live.cpErrors = j.cpErrors || []; }
+  }
+  voice.onSay = (text) => live?.jot('say', { text });
+  appVersion().then((v) => live.jot('open', { v, restored, gap_s: restored ? Math.round((Date.now() - snap.wallMs) / 1000) : null, screen: location.hash || '#home' }));
   return live;
 }
+// The version running (the service worker's cache is named after it), for the journal.
+async function appVersion() { try { return (await caches.keys()).filter((k) => k.startsWith('rally-')).map((k) => k.slice(6)).join(',') || 'dev'; } catch { return 'unknown'; } }
+function saveJournal() {
+  if (!live) return;
+  try { store.set('journal', { routeSavedAt: S.route?.savedAt, journal: live.journal, log: live.log, cpErrors: live.cpErrors || [] }); } catch (e) { console.warn('journal', e); }
+}
+setInterval(saveJournal, 15000);
+document.addEventListener('visibilitychange', () => { live?.jot('vis', { state: document.visibilityState }); if (document.visibilityState === 'hidden') saveJournal(); });
+window.addEventListener('pagehide', saveJournal);
 function startSensors() {
   ensureLive();
   if (!gps && TabletGps.supported()) {
-    gps = new TabletGps({ onSample: (sm) => live.ingest(sm), onStatus: (s) => { S.status.gps = s; } });
+    gps = new TabletGps({ onSample: (sm) => live.ingest(sm), onStatus: (s) => { if ((s === 'lost') !== (S.status.gps === 'lost')) live?.jot('sensor', { gps: s }); S.status.gps = s; } });
     gps.start();
   }
   if (!racebox && RaceBox.supported()) {
-    racebox = new RaceBox({ onSample: (sm) => live.ingest(sm), onStatus: (s, m) => { S.status.racebox = `${s} ${m || ''}`; } });
+    racebox = new RaceBox({ onSample: (sm) => live.ingest(sm), onStatus: (s, m) => { const v = `${s} ${m || ''}`; if (v !== S.status.racebox) live?.jot('sensor', { racebox: v.trim() }); S.status.racebox = v; } });
     racebox.restore().catch(() => {});
   }
 }
@@ -247,6 +265,7 @@ function showSettings() {
   S.view = mountSettings(box, {
     settings: S.settings, status: S.status,
     onChange: (patch) => {
+      live?.jot('set', Object.fromEntries(Object.entries(patch).map(([k, v]) => [k, k === 'apiKey' ? '(changed, not recorded)' : v])));
       S.settings = { ...S.settings, ...patch }; saveSettings(S.settings);
       voice.enabled = S.settings.voice; voice.rate = S.settings.voiceRate;
       if ('voiceName' in patch) voice.setName(S.settings.voiceName);
@@ -266,12 +285,13 @@ function showDrive() {
   ensureLive(); startSensors(); keepAwake();
   const driverOnly = new URLSearchParams(location.search).get('driver') === '1';
   const simple = (S.settings.navMode ?? 'simple') === 'simple';
-  const startBtn = h('button', { onclick: () => { if (!live.started) live.action('start'); startBtn.remove(); } }, 'START (at the start line)');
+  const startBtn = h('button', { onclick: () => { if (!live.started) live.userAction('start'); startBtn.remove(); } }, 'START (at the start line)');
   S.mapOn ??= store.get('mapOn', true);
-  const mapBtn = h('button', { onclick: () => setMap(!S.mapOn) }, 'Map');
+  const top = (label, fn) => () => { live.jot('ui', { what: 'button', label }); fn(); };   // top-bar taps go in the journal
+  const mapBtn = h('button', { onclick: top('Map', () => setMap(!S.mapOn)) }, 'Map');
   const extras = [...(HEAR_RICHTA && S.settings.listenRichta && S.settings.richtaSound ? [h('span', { class: 'badge good' }, '🎤 Hearing Richta')] : []),
-    ...(driverOnly ? [] : [h('button', { onclick: () => infoSheet('Hints', HINTS) }, 'Hints'), h('button', { onclick: () => infoSheet('Glossary: rally words', GLOSSARY) }, 'Glossary'), mapBtn]),
-    h('button', { onclick: connectRaceBox }, 'Connect RaceBox'), h('button', { onclick: () => document.documentElement.requestFullscreen?.() }, 'Full screen')];
+    ...(driverOnly ? [] : [h('button', { onclick: top('Hints', () => infoSheet('Hints', HINTS)) }, 'Hints'), h('button', { onclick: top('Glossary', () => infoSheet('Glossary: rally words', GLOSSARY)) }, 'Glossary'), mapBtn]),
+    h('button', { onclick: top('Connect RaceBox', connectRaceBox) }, 'Connect RaceBox'), h('button', { onclick: top('Full screen', () => document.documentElement.requestFullscreen?.()) }, 'Full screen')];
   if (!live.started && !simple) extras.unshift(startBtn);   // simple mode has its own big START
   app.append(topbar('Drive', extras));
   const grid = h('div', { class: `drive${driverOnly ? ' driver-only' : ''}` });
@@ -279,7 +299,7 @@ function showDrive() {
   grid.append(dEl, nEl); app.append(grid);
   const driver = mountDriver(dEl, { unit: S.settings.timingUnit });
   const digest = S.route?.digest ?? null;
-  const setSetting = (k, v) => { S.settings[k] = v; saveSettings(S.settings); };
+  const setSetting = (k, v) => { live.jot('set', { [k]: v }); S.settings[k] = v; saveSettings(S.settings); };
   const THEMES = [['dark', 'Dark'], ['day', 'Daylight'], ['contrast', 'High contrast'], ['bridge', 'Covered bridge']];
   const moreItems = [
     { label: 'Change colours', note: `Now: ${THEMES.find((t) => t[0] === (S.settings.theme ?? 'dark'))?.[1] ?? 'Dark'}. Next: Daylight for bright sun, High contrast, Covered bridge.`,
@@ -293,9 +313,10 @@ function showDrive() {
   ];
   const nav = mountNavigator(nEl, { instructions: live.schedule.rows, table: live.schedule.table(), unit: S.settings.timingUnit, digest,
     mode: simple ? 'simple' : 'full', startTod: clockStart(), moreItems,
+    onUi: (what, d) => live.jot('ui', { what, ...d }),
     onAction: (name, p) => {
       const n0 = live.log.length;
-      live.action(name, p);
+      live.userAction(name, p);
       nav.setRoute(live.schedule.rows, live.schedule.table(), digest);
       const fresh = live.log.slice(n0);
       if (fresh.length) nav.toast(`✓ ${fresh[fresh.length - 1].text}`);
@@ -348,12 +369,49 @@ function logText() {
     `Car ${st.carNumber} · car 0 starts ${st.baseStart} · timing in ${st.timingUnit === 'cent' ? 'hundredths' : 'seconds'} · TA up to ${mmss(st.taMax_s ?? 1170)} · Richta controls: ${st.legStyle === 'control' ? 'each starts a new leg' : 'timing carries on from the restart'}`,
     `Route: ${S.route?.instructions?.length ?? 0} instructions (${S.route?.source ?? 'unknown source'}), last changed ${S.route?.savedAt ? new Date(S.route.savedAt).toLocaleString() : '—'}`,
     `Odometer factor: ${e?.calibrated ? e.K.toFixed(5) : 'not calibrated'} · clock ${clock.synced ? `synced to the master clock (${clock.ref})` : 'not synced to the master clock'}`,
+    '', '--- Journal: what the crew tapped, what the app said and showed, and its state every 10 s (rally time)',
+    'TAP = a crew action, with the state just before it and → what the app made of it; · = state; UI = sheets, lines tapped, coach lines; SAY = voice; APP = event',
+    ...journalLines(),
+    '', '--- Timing records now', `zone edges set by Richta: ${(live?.ev.zoneBeeps || []).map((n) => `#${n}`).join(' ') || '—'}`,
+    `restarts: ${(live?.ev.restarts || []).map((x) => `${x.n != null ? `#${x.n}` : 'manual'} ${Number(x.D).toFixed(3)} mi ${typeof x.tod === 'number' ? fmtTod(x.tod) : x.tod}${x.auto ? ' (as passed)' : ''}`).join('; ') || '—'}`,
+    `CAST corrections: ${Object.entries(live?.ev.castFix || {}).map(([n, v]) => `#${n} → ${v}`).join('; ') || '—'} · delays: ${(live?.ev.tas || []).map((x) => `${Number(x.D).toFixed(2)} mi +${x.s} s`).join('; ') || '—'}`,
+    '', '--- Route as read (n · mileage · what · CAST · zone · pause · printed time · control | text)', ...routeLines(),
     '', '--- Events (rally time)', ...(live?.log || []).map((x) => `${fmtTod(x.t_s)}  ${x.text}`),
     '', '--- Checkpoints scored by this app', ...(live?.cpErrors || []).map((c) => `#${c.n}  ${c.D.toFixed(2)} mi  ${c.err >= 0 ? '+' : ''}${c.err.toFixed(1)} s`),
     '', '--- Distance engine (seconds since the app started)', ...(e?.log || []).map((x) => `${x.t.toFixed(1)}  ${x.text}`),
     '', '--- GPS track, one point a second: UTC time, latitude, longitude, mph, route miles',
     ...(live?.track || []).map(([u, la, lo, v, D]) => `${u ? new Date(u).toISOString() : ''},${la},${lo},${v ?? ''},${D}`),
   ].join('\n');
+}
+// The journal as lines, for finding friction and slips: each tap with the state before it and its result.
+function journalLines() {
+  const zw = { T: 'transit', Z: 'timed zone', W: 'waiting', '-': '—' };
+  const state = (s = {}) => [`D ${s.D ?? '--'}`, `OM ${s.om ?? '--'}`, `next #${s.nx ?? '--'}`, `${s.v ?? '--'} mph`, `CAST ${s.c ?? '--'}`, `target ${s.tg ?? '--'}`,
+    `avg ${s.av ?? '--'}`, s.d == null ? 'no timing' : s.d >= 0 ? `${s.d} s LATE` : `${-s.d} s EARLY`, zw[s.z] ?? '—',
+    ...(s.rz ? [`a beep here ${s.rz[0] === '+' ? 'starts' : 'ends'} #${s.rz.slice(1)}`] : []), ...(s.rec ? ['RECOVERING'] : [])].join(' · ');
+  const rest = (e) => { const { t, k, ...o } = e; return JSON.stringify(o); };
+  return (live?.journal || []).map((e) => {
+    const t = `${fmtTod(e.t)}  `;
+    switch (e.k) {
+      case 'act': return `${t}TAP ${e.a}${Object.keys(e.p || {}).length ? ` ${JSON.stringify(e.p)}` : ''}${e.via === 'mic' ? ' (heard by the tablet)' : ''} @ ${state(e.s)} → ${e.r?.length ? e.r.join(' / ') : '(nothing changed)'}`;
+      case 's': return `${t}· ${state(e)}${e.lat != null ? ` @ ${e.lat},${e.lon}` : ''}`;
+      case 'ui': return `${t}UI ${e.what}${e.title ? ` "${e.title}"` : ''}${e.n != null ? ` #${e.n}` : ''}${e.label ? ` ${e.label}` : ''}${e.s != null ? ` after ${e.s} s` : ''}${e.how ? ` (${e.how})` : ''}${e.text ? `: ${e.text}` : ''}`;
+      case 'say': return `${t}SAY "${e.text}"`;
+      case 'log': return `${t}APP ${e.text}`;
+      case 'mic': return `${t}MIC heard ${e.hz ?? '?'} Hz, ${e.db ?? '?'} dB over the background, ${e.frames ?? '?'} frames`;
+      case 'alert': return `${t}ALERT ${e.kind}: ${e.text}`;
+      case 'screen': return `${t}SCREEN ${e.hash}`;
+      case 'vis': return `${t}${e.state === 'hidden' ? 'APP HIDDEN (switched away or screen off)' : 'APP VISIBLE again'}`;
+      case 'open': return `${t}APP OPENED version ${e.v}${e.restored ? `, rally restored after ${e.gap_s} s away` : ', no rally to restore'}`;
+      default: return `${t}${e.k.toUpperCase()} ${rest(e)}`;
+    }
+  });
+}
+// The route as the app read it: what each line does for timing (misreads show here).
+function routeLines() {
+  return (S.route?.instructions || []).map((r) => [`#${r.n}`, r.om != null ? Number(r.om).toFixed(2) : '?', [r.action, r.dir, r.cue].filter(Boolean).join(' '),
+    r.cast_mph ? `CAST ${r.cast_mph}` : '', r.zone ? `${r.zone} ${zoneEdge(r) ?? ''}` : '', r.pause_s ? `pause ${r.pause_s} s` : '', r.restart_tod ? `time ${r.restart_tod}` : r.restart_any ? `restart ${r.restart_any}` : '',
+    r.control ? `control ${r.control}` : '', `| ${r.text ?? ''}`].filter(Boolean).join(' · '));
 }
 const logName = () => { const d = new Date(), p = (x) => String(x).padStart(2, '0'); return `rally-log-${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.txt`; };
 function saveLogFile() {
@@ -541,6 +599,7 @@ function route() {
   teardown();
   applyTheme();
   const hash = location.hash || '#home';
+  live?.jot('screen', { hash });
   ({ '#scan': showScan, '#verify': showVerify, '#settings': showSettings, '#drive': showDrive, '#log': showLog, '#paper': showPaper, '#diag': showDiag, '#help': showHelp }[hash] || showHome)();
 }
 navigator.storage?.persist?.().catch(() => {});

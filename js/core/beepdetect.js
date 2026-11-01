@@ -71,15 +71,22 @@ export class BeepDetector {
   }
   matches(frame) {
     const p = bestPeak(frame, this.lo, Math.min(this.hi, frame.length - 2));
-    return p.c >= this.minDb && this.bins.some((b) => Math.abs(p.bin - b) <= 2);
+    const ok = p.c >= this.minDb && this.bins.some((b) => Math.abs(p.bin - b) <= 2);
+    if (ok && !(p.c <= (this.peak?.c ?? -Infinity))) this.peak = p;   // the run's strongest frame, for lastHit
+    return ok;
   }
   // t: seconds. muted: our own voice is speaking (never count it).
   push(frame, t, muted = false) {
-    if (muted) { this.run = 0; return false; }
+    if (muted) { this.run = 0; this.peak = null; return false; }
     if (this.matches(frame)) { this.run++; return false; }
     const run = this.run;
     this.run = 0;
-    if (run >= this.minFrames && run <= this.sound.maxFrames && t >= this.quietUntil) { this.quietUntil = t + this.refractoryS; return true; }
+    const pk = this.peak; this.peak = null;
+    if (run >= this.minFrames && run <= this.sound.maxFrames && t >= this.quietUntil) {
+      this.quietUntil = t + this.refractoryS;
+      this.lastHit = { hz: pk ? Math.round(pk.bin * this.binHz) : null, db: pk ? Math.round(pk.c) : null, frames: run };   // what was heard
+      return true;
+    }
     return false;
   }
 }

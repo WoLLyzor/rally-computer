@@ -21,19 +21,26 @@ export function fmtTod(s, unit) {
   return `${p2(H)}:${p2(M)}:${p2(Math.floor(S))}`;
 }
 
-export function mountNavigator(container, { instructions = [], table = [], unit = 's', digest = null, onAction, mode = 'simple', startTod = null, moreItems = [] } = {}) {
+export function mountNavigator(container, { instructions = [], table = [], unit = 's', digest = null, onAction, onUi, mode = 'simple', startTod = null, moreItems = [] } = {}) {
   const act = (name, arg) => { try { onAction && onAction(name, arg); } catch (e) { console.error(e); } };
+  // The journal (onUi): sheets opened and how they closed, lines tapped, coach lines and toasts shown.
+  const ui = (what, d = {}) => { try { onUi && onUi(what, d); } catch (e) { console.error(e); } };
   let dg = digest, gloss = dg ? glossaryOf(dg) : null;
-  let ins = instructions, tbl = table, live = null, curN = null, off = false, lastAlertKind = null;
+  let ins = instructions, tbl = table, live = null, curN = null, off = false, lastAlertKind = null, lastCoachKey = '';
   const rows = new Map();
   const U = () => (live && live.unit) || unit;
 
   // ---------- sheets ----------
-  let sheetEl = null;
-  function closeSheet() { if (sheetEl) { sheetEl.remove(); sheetEl = null; } }
+  let sheetEl = null, sheetTitle = '', sheetAt = 0;
+  function closeSheet(how) {
+    if (!sheetEl) return;
+    sheetEl.remove(); sheetEl = null;
+    ui('sheet-closed', { title: sheetTitle, s: Math.round((performance.now() - sheetAt) / 100) / 10, how: typeof how === 'string' ? how : 'closed' });
+  }
   function openSheet(title, ...body) {
-    closeSheet();
-    sheetEl = h('div', { class: 'nv-overlay', onclick: (e) => { if (e.target === sheetEl) closeSheet(); } },
+    closeSheet('replaced');
+    sheetTitle = title; sheetAt = performance.now(); ui('sheet', { title });
+    sheetEl = h('div', { class: 'nv-overlay', onclick: (e) => { if (e.target === sheetEl) closeSheet('tapped outside'); } },
       h('div', { class: 'nv-sheet', role: 'dialog' },
         h('h2', { class: 'nv-sheet-title' }, title), ...body));
     root.appendChild(sheetEl);
@@ -222,6 +229,7 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
   let toastTimer = null;
   function toast(text) {
     if (!text) return;
+    ui('toast', { text });
     E.toast.textContent = text; E.toast.hidden = false;
     clearTimeout(toastTimer); toastTimer = setTimeout(() => { E.toast.hidden = true; }, 6000);
   }
@@ -234,7 +242,7 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
     for (const i of ins) {
       const t = byN.get(i.n);
       const row = h('div', { class: 'nv-row', role: 'listitem', dataset: { n: i.n },
-        onclick: () => (live && live.started && i.D != null ? hereSheet(i) : confirmSheet(`Make #${i.n} the next instruction?`, 'Make next', () => act('jump', { n: i.n }))) },
+        onclick: () => { ui('row', { n: i.n }); return live && live.started && i.D != null ? hereSheet(i) : confirmSheet(`Make #${i.n} the next instruction?`, 'Make next', () => act('jump', { n: i.n })); } },
         h('span', { class: 'nv-n' }, i.n),
         h('span', { class: 'nv-om' }, fmtOm(i.om)),
         h('span', { class: 'nv-ico' }, actionIcon(i)),
@@ -289,7 +297,11 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
     markCurrent(l.next ? l.next.n : null);
     // The coach line, and the button it points at.
     const c = coach(l, { rows: ins, startTod });
-    if (E.coachTitle.textContent !== c.title) E.coachTitle.textContent = c.title;
+    if (E.coachTitle.textContent !== c.title) {
+      E.coachTitle.textContent = c.title;
+      const ck = c.title.replace(/[\d:.]+/g, '#');   // countdowns change every second: journal a new message, not a new number
+      if (ck !== lastCoachKey) { lastCoachKey = ck; ui('coach', { title: c.title, text: c.text }); }
+    }
     if (E.coachText.textContent !== c.text) E.coachText.textContent = c.text;
     E.coach.className = `nv-coach nv-tone-${c.tone}`;
     const ctx = !l.started ? ['START', 'as you leave the start line'] : (l.alert && (l.alert.kind === 'missed_turn' || l.alert.kind === 'offcourse')) || (l.map_hint && l.map_hint.kind === 'offroute') ? ['BACK ON ROUTE', 'tap as you rejoin the route'] : null;
