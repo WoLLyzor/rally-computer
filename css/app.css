@@ -130,7 +130,8 @@ label{display:block;color:var(--muted);margin:10px 0 4px;font-size:.9rem}
 .times th,.times td{text-align:left;padding:5px 6px;border-bottom:1px solid var(--line);vertical-align:top}
 .times td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
 .times tr.times-first td{border-top:2px solid var(--info)}
-@media print{body{background:#fff;color:#000}.topbar{display:none}.times-start,.times-end,.times .muted{color:#000}.times th,.times td{border-color:#999}}
+@media print{body{background:#fff;color:#000}.topbar{display:none}.times-start,.times-end,.times .muted{color:#000}.times th,.times td{border-color:#999}
+  .help .panel{background:#fff;border:1px solid #999;break-inside:avoid}.help,.help *{color:#000!important}}
 .help .panel h2{margin-top:0}
 .help-list{margin:0;padding-left:1.2em}
 .help-list li{margin:6px 0;line-height:1.45}

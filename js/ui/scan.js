@@ -1,5 +1,6 @@
 // Photograph / pick the instruction pages, then read them.
 import { h, clear } from './dom.js';
+import { PRACTICE_TEXT } from '../app/practice.js';
 
 export function mountScan(container, opts) {
   const { onPagesChanged = () => {}, onExtract = () => {}, onPasteText = () => {} } = opts;
@@ -171,6 +172,10 @@ export function mountScan(container, opts) {
         ta,
         h('div', { style: { marginTop: '10px' } },
           h('button', { class: 'btn-info', onclick: () => { if (pasteText.trim()) onPasteText(pasteText); } }, 'Use this text'))),
+      h('div', { class: 'panel' },
+        h('b', null, 'Practice route near the start'),
+        h('div', { class: 'muted', style: { margin: '4px 0 10px' } }, 'About 11 miles from the end of Gateway Avenue (Burger King, I-90 and Route 7): an odometer check and three segments. Your real instructions replace it.'),
+        h('button', { class: 'btn-info', onclick: () => onPasteText(PRACTICE_TEXT) }, 'Load the practice route')),
       fileInput, pickInput].filter(Boolean));   // Element.append would print null as "null"
   }
 

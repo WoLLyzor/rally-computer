@@ -467,6 +467,21 @@ export class LiveLoop {
         this.voice?.speak(`Restart counted at ${hh} ${String(mm).padStart(2, '0')}${ra.restart_any === 'flying' ? ` and ${ss} seconds` : ''}.`, { key: `restart:${ra.n}`, alert: true });
       }
     }
+    // Counted on the way in, then the car stopped at the restart to wait for its minute: the minute it pulls
+    // away in is the one that counts (Richta's minute at or before the crossing out).
+    const lr = this.ev.restarts.at(-1), lrRow = lr?.n != null ? sch.rows.find((r) => r.n === lr.n) : null;
+    if (this.started && lrRow?.restart_any === 'minute' && typeof lr.tod === 'number' && D >= lr.D - 0.05 && D < lr.D + 0.1) {
+      if (e.v < 0.5) this.heldAt = lr.n;
+      else if (this.heldAt === lr.n && e.v > 2) {
+        this.heldAt = null;
+        const t = Math.floor(now / 60) * 60;
+        if (t !== lr.tod) {
+          lr.tod = t; this.rebuild();
+          this.addLog(`Restart #${lr.n} re-timed to ${fmtTod(t)}: the minute the car pulled away in`, { claim: true });
+          this.voice?.speak(`Restart counted at ${Math.floor(t / 3600) % 12 || 12} ${String(Math.floor(t / 60) % 60).padStart(2, '0')}.`, { key: `restart:${lr.n}:${t}`, alert: true });
+        }
+      }
+    } else if (this.heldAt != null && lr?.n !== this.heldAt) this.heldAt = null;
     const pr = this.started ? this.progress.update(D) : { next: sch.rows[0] ?? null, alert: null };
     if (this.recover && pr.alert) { this.progress.clearAlert(); pr.alert = null; }   // the distance itself is in doubt
     // A turn the gyro missed (a gap in its data, an odd junction): the GPS course across the point
@@ -477,8 +492,9 @@ export class LiveLoop {
       if (d !== null) { this.progress.clearAlert(); pr.alert = null; this.addLog(`Turn #${r.n} confirmed by GPS course (${d > 0 ? '+' : ''}${d.toFixed(0)}°)`); }
     }
     const perfect = this.started ? sch.perfectTimeAt(D) : null;
-    let delta = perfect === null ? null : now - perfect;
     const cast = this.started ? sch.castAt(D) : sch.castAt(0);
+    // No average speed yet (an untimed odometer check before the first restart): nothing to be early or late against.
+    let delta = perfect === null || (!(cast > 0) && !sch.inTransit(D)) ? null : now - perfect;
     // A pause taken at a stop. Near the point (−0.03…+0.015 mi, wider than the distance error) the time
     // to beat is the arrival until the car stops; stopped, the departure (arrival + pause) less half of
     // what pulling away costs, with "Go in N"; once taken, the departure line, also for the few metres
