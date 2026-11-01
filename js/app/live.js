@@ -53,7 +53,8 @@ export class LiveLoop {
   // ---- sensors ----
   ingest(sm) {
     if (sm.src === 'racebox') {
-      this.clock.onGpsTime(sm.utc_ms, sm.timeResolved);
+      const p = this.prevRb, Dbefore = this.engine.D;
+      if (!sm.late) this.clock.onGpsTime(sm.utc_ms, sm.timeResolved);
       if (this.prevRb && sm.fixOk && this.prevRb.fixOk) {
         const dt = sm.t - this.prevRb.t;
         if (dt > 0) this.gnssAccel += (1 - Math.exp(-dt / 0.3)) * ((sm.speed_mps - this.prevRb.speed_mps) / dt - this.gnssAccel);
@@ -64,6 +65,12 @@ export class LiveLoop {
       if (aF !== null) sm.aFwd_mps2 = aF;
       sm.imuQuiet = this.quiet.push(sm.acc_g, sm.gyro_dps);
       this.engine.ingest(sm);
+      // No data for a while (app paused, Bluetooth dropout) while the car was moving: the engine has
+      // filled the gap from the GPS straight line; say how uncertain that is.
+      if (p && this.started) {
+        const gapS = Math.max(sm.t - p.t, sm.utc_ms && p.utc_ms ? (sm.utc_ms - p.utc_ms) / 1000 : 0);
+        if (gapS > 2) this.enterRecovery(gapS, this.engine.D - Dbefore, Math.max(p.speed_mps, sm.speed_mps));
+      }
       if (sm.headingValid && sm.speed_mps > 3) this.pushHeading(sm.t, sm.heading_deg);
       if (yaw !== null) { const ev = this.turns.push(sm.t, yaw, this.engine.s); if (ev) this.onTurn(ev); }
       if (sm.fixOk) this.onFix(sm.lat, sm.lon, sm.t);
@@ -99,8 +106,24 @@ export class LiveLoop {
       const fixed = Math.min(Math.max(driven, chord), chord * 1.05);
       this.engine.s = g.s + fixed;
       this.addLog(`Resumed: gap distance ${driven.toFixed(0)} m → ${fixed.toFixed(0)} m from GPS`);
+      if (this.started && g.seconds) this.enterRecovery(g.seconds, fixed / 1609.344 * this.engine.K, Math.max(g.v ?? 0, this.engine.v));
     }
     this.lastFix = { lat, lon, t };
+  }
+
+  // The app was paused (Home button, screen off, restart) while the car moved. The gap was filled from
+  // the GPS straight line, which is short when the road bent: the car may be up to eHi miles further.
+  // Rows passed meanwhile raise no alarm. The next turn that only one instruction fits re-anchors the
+  // distance, or the navigator taps the instruction they're at. Small gaps need none of this.
+  enterRecovery(gapS, fillMi, vMax) {
+    const e = this.engine, prev = this.recover;
+    const eHi = Math.max(0, (vMax * 1.15 * gapS + 30) / 1609.344 * (e.K || 1) - fillMi) + (prev?.eHi ?? 0);
+    const eLo = -0.05 * Math.max(0, fillMi) - 0.01 + (prev ? prev.eLo + 0.01 : 0);
+    if (eHi - eLo <= 0.06 || !this.progress) return;
+    this.progress.passGap(e.D);
+    this.recover = { gapS: Math.round(gapS), eLo, eHi };
+    this.addLog(`Paused ${gapS.toFixed(0)} s while moving: filled ${fillMi.toFixed(2)} mi from GPS; the car may be up to ${eHi.toFixed(2)} mi further. Fixing at the next turn, or tap the instruction you're at.`);
+    this.voice?.speak('The app was paused. Distance may be off until the next turn.', { key: `paused:${Math.round(e.s)}`, alert: true });
   }
 
   onTurn(ev) {
@@ -108,6 +131,19 @@ export class LiveLoop {
     if (h0 !== null && h1 !== null) this.turns.checkSign(ev, wrap180(h1 - h0));
     if (!this.started) return;
     const D = this.engine.Dof(ev.sMid);
+    if (this.recover) {
+      const m = this.progress.matchAfterGap(ev, D, this.recover);
+      if (!m.row) {
+        this.addLog(`Turn ${ev.dir} ${Math.abs(ev.angle).toFixed(0)}° after the pause ${m.fits.length ? `fits #${m.fits.join(' and #')}` : 'fits no instruction'}: distance still uncertain`);
+        return;
+      }
+      const jump = this.engine.reanchor(m.row.D, ev.sMid, `#${m.row.n} turn after pause`);
+      this.recover = null;
+      this.lastResync = `#${m.row.n} after pause ${jump >= 0 ? '+' : ''}${jump.toFixed(3)} mi`;
+      this.addLog(`Back on track: turn ${ev.dir} matched #${m.row.n}; distance ${jump >= 0 ? '+' : ''}${jump.toFixed(3)} mi`);
+      this.voice?.speak(`Distance fixed at instruction ${m.row.n}.`, { key: `fixed:${m.row.n}` });
+      return;
+    }
     const res = this.progress.onTurn(ev, D);
     if (res.row) this.addLog(`Turn ${ev.dir} ${Math.abs(ev.angle).toFixed(0)}° matched #${res.row.n} at ${D.toFixed(3)}`);
     if (res.resync && this.engine.calibrated) {
@@ -180,6 +216,18 @@ export class LiveLoop {
       case 'ta': this.ev.tas.push({ D: e.D, s: p.s }); this.undo.push({ kind: 'ta' }); this.rebuild(); this.addLog(`TA ${p.s / 60} min declared at ${e.D.toFixed(2)}`, { claim: true }); break;
       case 'restart': this.ev.restarts.push({ D: e.D, tod: typeof p.tod === 'number' ? fmtTod(p.tod) : p.tod }); this.undo.push({ kind: 'restart' }); this.rebuild(); this.addLog(`Restart ${p.tod}`); break;
       case 'jump': this.progress.jump(p.n); this.addLog(`Next instruction set to #${p.n}`); break;
+      case 'here': {   // the navigator says the car is at instruction #n now (after a pause)
+        const rows = this.schedule.rows, i = rows.findIndex((r) => r.n === p.n), row = rows[i];
+        if (!this.started) break;
+        if (!row || row.D === null) { this.addLog(`#${p.n} has no mileage: MARK it when you reach it`); break; }
+        this.undo.push({ kind: 'here', theta: [...e.theta], Ptheta: e.Ptheta.map((x) => [...x]), idx: this.progress.idx, done: [...this.progress.done], recover: this.recover ?? null });
+        const jump = e.reanchor(row.D, sNow, `#${row.n} navigator`);
+        this.progress.jump(rows[i + 1]?.n ?? row.n); this.progress.done.add(row.n);
+        this.recover = null;
+        this.lastResync = `#${row.n} by navigator ${jump >= 0 ? '+' : ''}${jump.toFixed(3)} mi`;
+        this.addLog(`At #${row.n} (navigator): distance ${jump >= 0 ? '+' : ''}${jump.toFixed(3)} mi`);
+        break;
+      }
       case 'offcourse':
         if (p.on && !this.offStart) { this.offStart = { s: e.s, D: e.D }; this.addLog(`Off course at ${e.D.toFixed(3)}`); }
         else if (!p.on && this.offStart) {
@@ -197,6 +245,7 @@ export class LiveLoop {
         if (u.kind === 'restart') this.ev.restarts.pop();
         if (u.kind === 'mark') delete this.ev.marks[u.n];
         if (u.kind === 'checkpoint') { if (u.which === 'out') delete this.ev.outTimes[u.n]; else delete this.ev.inTimes[u.n]; }
+        if (u.kind === 'here') { e.theta = u.theta; e.Ptheta = u.Ptheta; this.progress.idx = u.idx; this.progress.done = new Set(u.done); this.recover = u.recover; }
         this.rebuild(); this.addLog(`Undo ${u.kind}`);
         break;
       }
@@ -223,6 +272,7 @@ export class LiveLoop {
     const D = e.D;
     if (this.progress) this.progress.calibrated = e.calibrated;
     const pr = this.started ? this.progress.update(D) : { next: sch.rows[0] ?? null, alert: null };
+    if (this.recover && pr.alert) { this.progress.clearAlert(); pr.alert = null; }   // the distance itself is in doubt
     // A turn the gyro missed (a gap in its data, an odd junction): the GPS course across the point
     // confirms it, so no false "Missed turn?".
     if (pr.alert && !pr.alert.checked) {
@@ -268,6 +318,7 @@ export class LiveLoop {
     let alert = null;
     if (pr.alert) alert = { kind: 'missed_turn', text: `Missed turn? Check #${pr.alert.n} at ${fmtOm(pr.alert.D - (sch.bases[sch.rows.find((r) => r.n === pr.alert.n)?.section] ?? 0))}` };
     if (this.offStart) alert = { kind: 'offcourse', text: `Off course since ${fmtOm(this.offStart.D - base)} · ${((e.s - this.offStart.s) / 1609.344).toFixed(2)} mi` };
+    else if (this.recover) alert = { kind: 'recovering', text: `Paused ${this.recover.gapS} s: distance may be up to ${this.recover.eHi.toFixed(2)} mi short. Tap the instruction you're at (or wait for the next turn).` };
     if (e.health.racebox === 'lost' && e.health.gps !== 'ok' && this.started) alert = alert ?? { kind: 'gps_lost', text: 'No GPS: distance is estimated' };
 
     this.cues({ D, next, delta, speak: said.speak, display: said.display, cap: adv?.cap ?? null, alert, hold });
@@ -282,6 +333,7 @@ export class LiveLoop {
       alert, hold, ta_suggest: ta && ta.taS > 0 ? ta : null,
       health: { ...e.health, k: e.K, last_resync: this.lastResync ?? '' },
       speed_mph: e.v / 0.44704, stopped: e.v < 0.3, unit: st.timingUnit, started: this.started, calibrated: e.calibrated,
+      recovering: !!this.recover,
     };
     return this.state;
   }
@@ -345,7 +397,7 @@ export class LiveLoop {
   snapshot() {
     return { v: 1, wallMs: Date.now(), engine: this.engine.snapshot(Date.now()), ev: this.ev, started: this.started, startS: this.startS,
       calibratedAt: this.calibratedAt, progress: this.progress ? { idx: this.progress.idx, done: [...this.progress.done] } : null,
-      offStart: this.offStart, lastFix: this.lastFix ? { lat: this.lastFix.lat, lon: this.lastFix.lon } : null, said: [...(this.voice?.said ?? [])] };
+      offStart: this.offStart, lastFix: this.lastFix ? { lat: this.lastFix.lat, lon: this.lastFix.lon } : null, said: [...(this.voice?.said ?? [])], recover: this.recover ?? null };
   }
   restore(snap) {
     const seconds = Math.max(0, (Date.now() - snap.wallMs) / 1000);
@@ -353,7 +405,8 @@ export class LiveLoop {
     this.rebuild();
     if (snap.progress) { this.progress.idx = snap.progress.idx; this.progress.done = new Set(snap.progress.done); }
     const fill = this.engine.restore(snap.engine, { seconds, chord_m: null });
-    if (snap.lastFix) this.pendingGap = { lat: snap.lastFix.lat, lon: snap.lastFix.lon, s: this.engine.s - fill };
+    if (snap.lastFix) this.pendingGap = { lat: snap.lastFix.lat, lon: snap.lastFix.lon, s: this.engine.s - fill, seconds, v: snap.engine.speed };
+    if (snap.recover) this.recover = snap.recover;
     if (this.voice) for (const k of snap.said || []) this.voice.said.add(k);
     this.addLog(`Restored after ${seconds.toFixed(1)} s (estimated ${fill.toFixed(0)} m; corrected at the first GPS fix)`);
     return seconds;

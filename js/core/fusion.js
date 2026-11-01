@@ -225,6 +225,18 @@ export class DistanceEngine {
     return { accepted: true, residual: inn, jump };
   }
 
+  // Re-anchor after a pause: the car was at official mileage D_obs at raw distance s_obs. Unlike a
+  // re-sync this takes the whole correction at once (no gate) and keeps the calibration factor.
+  reanchor(D_obs, s_obs, label = '') {
+    const before = this.D;
+    this.theta = [D_obs - this.theta[1] * s_obs / MI, this.theta[1]];
+    this.Ptheta = [[Math.max(this.Ptheta[0][0], 0.006 ** 2), this.Ptheta[0][1]], [this.Ptheta[1][0], this.Ptheta[1][1]]];
+    this.lastResyncM = s_obs / MI;
+    const jump = this.D - before;
+    this.note(this.t ?? 0, `re-anchor ${label}: D moved ${jump >= 0 ? '+' : ''}${jump.toFixed(3)}`);
+    return jump;
+  }
+
   // ---- Crash-safe state (saved every second; design §7) ----
   snapshot(wallMs) {
     return { v: 1, wallMs, s: this.s, x: this.x, P: this.P, theta: this.theta, Ptheta: this.Ptheta, calibrated: this.calibrated,

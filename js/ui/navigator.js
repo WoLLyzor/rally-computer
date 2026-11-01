@@ -41,6 +41,15 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
         h('button', { class: 'nv-bigbtn', onclick: closeSheet }, 'Cancel'),
         h('button', { class: 'nv-bigbtn nv-go', onclick: () => { closeSheet(); onOk(); } }, okLabel)));
   }
+  // After a pause the distance is in doubt: tapping the instruction the car is at fixes it.
+  function hereSheet(i) {
+    openSheet(`Are you at #${i.n} now?`,
+      h('p', { class: 'nv-sheet-note' }, `Tap "We're here" as you pass its point: the distance becomes ${fmtOm(i.om)}.`),
+      h('div', { class: 'nv-sheet-btns' },
+        h('button', { class: 'nv-bigbtn', onclick: closeSheet }, 'Cancel'),
+        h('button', { class: 'nv-bigbtn', onclick: () => { closeSheet(); act('jump', { n: i.n }); } }, 'Make next'),
+        h('button', { class: 'nv-bigbtn nv-go', onclick: () => { closeSheet(); act('here', { n: i.n }); } }, "We're here")));
+  }
   function timeEditor(initial) {
     let v = Math.round(initial ?? 0);
     const disp = h('div', { class: 'nv-tdisp' }, fmtTod(v, U()));
@@ -150,7 +159,7 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
     for (const i of ins) {
       const t = byN.get(i.n);
       const row = h('div', { class: 'nv-row', role: 'listitem', dataset: { n: i.n },
-        onclick: () => confirmSheet(`Make #${i.n} the next instruction?`, 'Make next', () => act('jump', { n: i.n })) },
+        onclick: () => (live && live.recovering && i.D != null ? hereSheet(i) : confirmSheet(`Make #${i.n} the next instruction?`, 'Make next', () => act('jump', { n: i.n }))) },
         h('span', { class: 'nv-n' }, i.n),
         h('span', { class: 'nv-om' }, fmtOm(i.om)),
         h('span', { class: 'nv-ico' }, actionIcon(i)),

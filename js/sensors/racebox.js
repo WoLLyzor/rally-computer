@@ -8,14 +8,45 @@ export const NUS_SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
 export const NUS_RX = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';   // write
 export const NUS_TX = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';   // notify
 
+// Sample time on the tablet's clock: normally the arrival time. When Android pauses the app and later
+// hands over the RaceBox data it held back, it all arrives at once; the GPS time in each frame keeps the
+// true spacing, so a sample arriving more than lateS after it was measured is placed at its measurement
+// time instead (late: true, so it does not steer the rally clock).
+export class SampleTimer {
+  constructor({ lateS = 0.5 } = {}) { this.lateS = lateS; this.off = null; this.lastT = -Infinity; this.lateSince = null; }
+  // tRx: arrival (s); gpsMs: the frame's GPS time in ms (null when the receiver has no valid time).
+  time(tRx, gpsMs) {
+    let t = tRx, late = false;
+    if (Number.isFinite(gpsMs)) {
+      const o = tRx - gpsMs / 1000;   // arrival minus GPS time: transport delay plus the clocks' offset
+      if (this.off === null || o < this.off || o - this.off > 3600) this.off = o;   // the fastest delivery; re-anchor after a time jump
+      const lag = o - this.off;
+      if (lag > this.lateS) {
+        this.lateSince ??= tRx;
+        if (tRx - this.lateSince > 5) { this.off = o; this.lateSince = null; }   // a lasting lag is a clock step, not held-back data
+        else { t = gpsMs / 1000 + this.off; late = true; }
+      } else { this.lateSince = null; this.off += 0.001 * lag; }   // follow slow drift between the two clocks
+    }
+    t = Math.max(t, this.lastT + 0.001);
+    this.lastT = t;
+    return { t, late };
+  }
+}
+
 export class RaceBox {
   constructor({ onSample, onStatus = () => {} }) {
     this.onSample = onSample; this.onStatus = onStatus;
     this.device = null; this.char = null; this.wanted = false; this.retryTimer = null;
+    this.timer = new SampleTimer();
     this.parser = new UbxParser((cls, id, payload) => {
       if (cls === 0xff && id === 0x01) {
         const s = decodeRaceBox(payload);
-        if (s) { s.t_rx = performance.now() / 1000; this.onSample(s); }
+        if (s) {
+          s.t_rx = performance.now() / 1000;
+          const st = this.timer.time(s.t_rx, s.utc_ms);
+          s.t = st.t; s.late = st.late;
+          this.onSample(s);
+        }
       }
     });
     this.onNotify = (e) => {

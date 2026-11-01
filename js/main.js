@@ -60,7 +60,7 @@ function startSensors() {
     gps.start();
   }
   if (!racebox && RaceBox.supported()) {
-    racebox = new RaceBox({ onSample: (sm) => { sm.t = sm.t_rx; live.ingest(sm); }, onStatus: (s, m) => { S.status.racebox = `${s} ${m || ''}`; } });
+    racebox = new RaceBox({ onSample: (sm) => live.ingest(sm), onStatus: (s, m) => { S.status.racebox = `${s} ${m || ''}`; } });
     racebox.restore().catch(() => {});
   }
 }

@@ -107,6 +107,37 @@ export class RouteProgress {
     return { row: r, resync: this.exact(r) ? { D_obs: r.D, s_obs: s, sigmaMi: 0.008, label: `#${r.n} mark` } : null };
   }
 
+  // The app was paused while the car moved: rows up to D were passed unseen, so no "Missed turn?" for them.
+  passGap(D) {
+    while (this.idx < this.rows.length) {
+      const r = this.rows[this.idx];
+      const at = r.D ?? this.rows.slice(this.idx + 1).find((x) => x.D !== null)?.D ?? Infinity;
+      if (at > D) break;
+      this.done.add(r.n); this.events.push({ kind: 'passed_in_gap', n: r.n }); this.idx++;
+    }
+    this.alert = null;
+  }
+
+  // After a pause the car is somewhere between D + eLo and D + eHi. A detected turn re-anchors only
+  // when exactly one exact-mileage turn instruction of that direction lies in that range.
+  matchAfterGap(ev, D, { eLo, eHi }) {
+    const fits = [];
+    for (let i = this.idx; i < this.rows.length; i++) {
+      const r = this.rows[i];
+      if (r.D === null) continue;
+      if (r.D > D + eHi + 0.02) break;
+      if (r.D < D + eLo - 0.02 || r.action !== 'turn' || !r.dir || r.dir === 'S' || !this.exact(r)) continue;
+      const okDir = r.dir[r.dir.length - 1] === ev.dir || r.dir === 'U';
+      if (okDir && Math.abs(ev.angle) >= (TURN_MIN_ANGLE[r.dir] ?? 60)) fits.push(i);
+    }
+    if (fits.length !== 1) return { row: null, fits: fits.map((i) => this.rows[i].n) };
+    const i = fits[0], r = this.rows[i];
+    for (let j = this.idx; j <= i; j++) this.done.add(this.rows[j].n);
+    this.idx = i + 1; this.alert = null;
+    this.events.push({ kind: 'turn_matched', n: r.n, D, residual: r.D - D, afterGap: true });
+    return { row: r, fits: [r.n] };
+  }
+
   jump(n) {
     const i = this.rows.findIndex((r) => r.n === n);
     if (i < 0) return;
