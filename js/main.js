@@ -475,9 +475,9 @@ function showHelp() {
       [b('Held up'), ' by something you couldn’t help (train, tractor, school bus, a slow car, waiting at a one-lane bridge)? Tap DELAY right away, tap the green total, then press TA+ in Richta the number of times shown. Later is too late: the checkpoints are hidden.'],
       [b('Speed limit signs (optional):'), ' MORE → tap the limit. The app never asks for more than that.']]),
     sec('8 · End of a segment, and the restart', [
-      [b('“Segment done: no timing now”:'), ' you can stop and enjoy the bridge. The app stays quiet until the restart.'],
+      [b('“Segment done: no timing now”:'), ' you can stop and enjoy the bridge. The app stays quiet until the restart. It says this after the segment’s last checkpoint. A beep with more of the segment still ahead is just logged and the timing goes on; if you then stand still for a minute near it, the app takes it as the segment’s end.'],
       [b('The top line shows the restart:'), ' a countdown to its time, or “leave on any whole minute, crossing just after :00”.'],
-      [b('Leave on time and tap RICHTA BEEPED as you cross the restart gate.'), ' It says “Segment started. Timing from 11 42.” Check that matches Richta’s out time. If it doesn’t: MORE → Restart time.'],
+      [b('Leave on time and tap RICHTA BEEPED as you cross the restart gate.'), ' It says “Segment started. Timing from 11 42” (or “Restart counted at 11 42” when it went by the mileage). Check that matches Richta’s out time. If it doesn’t: MORE → Restart time.'],
       [b('Each segment starts fresh:'), ' being late in one doesn’t carry into the next.']]),
     sec('9 · If something goes wrong', [
       [b('Wrong tap:'), ' UNDO.'],
@@ -494,7 +494,7 @@ function showHelp() {
       [b('Left, bottom: the map.'), ' It turns with the car. Green line: where you’ve been. Blue road: where the next turn goes. Pink line: the app’s guess at the route, with how sure it is (%), dashed when unsure. Trust the instructions over the map.'],
       [b('Middle:'), ' at the top, what to do now. Under it, the instructions; the highlighted one is next, with the time you should get there.'],
       [b('Right:'), ' the six buttons. RICHTA BEEPED, MARK, DELAY, START (later BACK ON ROUTE), UNDO, MORE.'],
-      [b('Top bar:'), ' ‹ Home, Hide map, Connect RaceBox, Full screen. “🎤 Hearing Richta” shows when the tablet is listening.']]),
+      [b('Top bar:'), ' ‹ Home, Hints, Glossary, Hide map, Connect RaceBox, Full screen. “🎤 Hearing Richta” shows when the tablet is listening.']]),
     sec('11 · The MORE menu (now and then)', [
       [b('Speed limit sign:'), ' 25, 35, 45, 55 or other.'],
       [b('End odo check:'), ' only if MARK didn’t catch the end of the odometer check, tapped right at its end.'],

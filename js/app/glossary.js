@@ -6,7 +6,7 @@ export const GLOSSARY = [
   ['Perfect time, early, late:', 'the perfect time is when a car driving exactly at the CAST would get there. You’re early or late by the difference.'],
   ['Segment (leg):', 'one timed stretch, from a restart to its last checkpoint. Here each segment starts fresh.'],
   ['Restart:', 'where timing starts again: at a printed time, or “at the top of any minute” (leave as the clock shows :00, any minute you like).'],
-  ['Odometer check:', 'the first stretch, with official miles. It tells the app how your car measures, so its miles match the official ones all day.'],
+  ['Odometer check:', 'the first stretch, with official miles. The app compares them with its GPS miles there, so its mileage matches the official one all day. MARK exactly at its end.'],
   ['Mileage:', 'the official miles printed on each line, e.g. 4.35. “3.14/0.00” means the mileage starts again from 0.00 there.'],
   ['TA (time allowance):', 'time you add in Richta after a hold-up you couldn’t help (train, tractor, school bus). In the app: DELAY.'],
   ['Pause:', 'a printed wait, e.g. “PAUSE 0.30 at STOP”: stop there and wait it out; the app counts it down and says GO.'],
@@ -26,6 +26,6 @@ export const HINTS = [
   ['Lost? Don’t panic.', 'Follow the top line back and tap BACK ON ROUTE at the turn. Getting lost costs more than being late.'],
   ['At a segment end, relax.', 'Stretch, enjoy the bridge, and read the next segment’s first lines before the restart.'],
   ['Before each restart,', 'agree on your out time (the printed time, or the next whole minute) and the first turn.'],
-  ['The odometer check is untimed.', 'Use it to settle in and practise the callouts.'],
+  ['The odometer check is usually untimed', '(the GIs say). Use it to settle in and practise the callouts.'],
   ['Who wins an argument:', 'the paper beats the app, and Richta is the score.'],
 ];

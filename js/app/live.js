@@ -256,8 +256,12 @@ export class LiveLoop {
       }
       case 'beep': {   // Richta chimed at one of its hidden controls
         const tod = p.tod ?? this.clock.nowTod(), D = p.D ?? e.D, delta = p.delta ?? this.state?.delta_s ?? null;
-        // The segment's last control (the next timed line is a restart): no timing until that restart.
-        const rows = this.schedule.rows, rs = restartNext(rows, (this.progress?.idx ?? rows.length) - 1);
+        // The segment's last control (the next timed line is a restart, and nothing of the segment is left ahead):
+        // no timing until that restart. Short of that it's one of the segment's hidden checkpoints; a stop of a
+        // minute near it afterwards (the break at the bridge) still ends the segment there (tick).
+        const rows = this.schedule.rows, cand = restartNext(rows, (this.progress?.idx ?? rows.length) - 1);
+        const rs = cand && this.lastOfSegment(cand, D) ? cand : null;
+        this.maybeEnd = cand && !rs ? { D, tod, rs: cand.n, since: null } : null;
         const resets = !rs && this.settings.legStyle === 'control';
         if (rs) { this.ev.segEnds.push({ D, tod }); this.ev.endBeeps.push(rs.n); this.undo.push({ kind: 'segend', rs: rs.n }); this.rebuild(); }
         if (resets) { this.ev.restarts.push({ D, tod }); this.undo.push({ kind: 'restart' }); this.rebuild(); }
@@ -393,6 +397,14 @@ export class LiveLoop {
     } else this.calWarn = null;
   }
 
+  // Nothing of restart rs's segment is left ahead of the car at D: the restart within half a mile, or no
+  // instruction ahead before it except a printed checkpoint right here.
+  lastOfSegment(rs, D) {
+    if (rs.D !== null && rs.D - D <= 0.5) return true;
+    const rows = this.schedule.rows, i = rows.findIndex((r) => r.n === rs.n);
+    const ahead = rows.slice(Math.max(0, this.progress?.idx ?? 0), i).filter((r) => r.D === null || r.D > D + 0.05);
+    return !ahead.some((r) => r.action !== 'control' || r.D === null || r.D > D + 0.3);
+  }
   // A printed restart time for this car (+ car number minutes when the line says so).
   restartTod(r) { return parseTod(r.restart_tod) + (r.restart_plus_car ? 60 * (this.settings.carNumber ?? 0) : 0); }
   // Raw distance at an earlier clock time (the engine keeps the last 120 s).
@@ -465,6 +477,20 @@ export class LiveLoop {
         this.addLog(`Restart #${ra.n} counted at ${fmtTod(t)} (${ra.restart_any === 'minute' ? 'the minute you crossed in' : 'flying'}): check it against Richta's out time`, { claim: true });
         const hh = Math.floor(t / 3600) % 12 || 12, mm = Math.floor(t / 60) % 60, ss = Math.floor(t % 60);
         this.voice?.speak(`Restart counted at ${hh} ${String(mm).padStart(2, '0')}${ra.restart_any === 'flying' ? ` and ${ss} seconds` : ''}.`, { key: `restart:${ra.n}`, alert: true });
+      }
+    }
+    // A beep taken as one of the segment's checkpoints, then the car stands for a minute within half a mile of it
+    // (the break at the bridge): that beep was the segment's end.
+    const me = this.maybeEnd;
+    if (me && this.started) {
+      const pend = this.pendingRestart(D);
+      if (D - me.D > 0.5 || sch.waitingAt(D) || pend?.n !== me.rs) this.maybeEnd = null;
+      else if (e.v >= 0.5) me.since = null;
+      else if ((me.since ??= now) <= now - 60) {
+        this.maybeEnd = null;
+        this.ev.segEnds.push({ D: me.D, tod: me.tod }); this.ev.endBeeps.push(me.rs); this.undo.push({ kind: 'segend', rs: me.rs }); this.rebuild();
+        this.addLog(`Stopped a minute after the beep at ${fmtTod(me.tod)}: segment done, no timing until the restart at #${me.rs}`, { claim: true });
+        this.voice?.speak(`Segment done. Timing starts again at the restart, instruction ${me.rs}.`, { key: `wait:${me.rs}`, alert: true });
       }
     }
     // Counted on the way in, then the car stopped at the restart to wait for its minute: the minute it pulls
