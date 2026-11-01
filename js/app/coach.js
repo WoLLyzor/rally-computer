@@ -71,10 +71,10 @@ export function coach(st, ctx = {}) {
     const w = st.waiting, where = w.to_mi != null && w.to_mi > 0.02 ? ` The restart is in ${distWords(w.to_mi)}.` : '';
     if (w.tod != null) {
       return { title: w.in_s > 0 ? `Segment done. Restart in ${mmss(w.in_s)}` : 'Restart now', tone: w.in_s > 0 ? 'good' : 'watch', act: 'richta',
-        text: `Leave the restart at ${fmtTod(w.tod)}. Tap RICHTA BEEPED when Richta beeps there.${where}` };
+        text: `Leave the restart at ${fmtTod(w.tod)}. Tap RICHTA BEEPED when Richta beeps there; a few seconds late is OK.${where}` };
     }
     return { title: 'Segment done: no timing now', tone: 'good', act: 'richta',
-      text: `${w.any === 'minute' ? 'You can stop. Next segment: leave the restart on any whole minute, crossing just after :00.' : 'You can stop. The next segment starts as you cross the restart.'} Tap RICHTA BEEPED when Richta beeps there.${where}` };
+      text: `${w.any === 'minute' ? 'You can stop. Next segment: leave the restart on any whole minute, crossing just after :00.' : 'You can stop. The next segment starts as you cross the restart.'} Tap RICHTA BEEPED when Richta beeps there; a few seconds late is OK.${where}` };
   }
   if (st.zone === 'transit' && st.transit) {
     return { title: `Transit: arrive in ${mmss(st.transit.remaining_s)}`, text: `No timing in the transit. Be at its end by ${fmtTod(st.transit.arrive_tod)}.`, tone: 'info', act: null };

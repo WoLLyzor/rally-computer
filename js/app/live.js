@@ -23,7 +23,7 @@ export class LiveLoop {
     this.turns = new TurnDetector();
     this.limits = new LimitTracker();
     this.ann = new SpeedAnnouncer();
-    this.ev = { marks: {}, outTimes: {}, inTimes: {}, tas: [], restarts: [], segEnds: [] };
+    this.ev = { marks: {}, outTimes: {}, inTimes: {}, tas: [], restarts: [], segEnds: [], endBeeps: [] };   // endBeeps: restarts whose segment's end Richta has signalled
     this.instructions = []; this.schedule = null; this.progress = null;
     this.started = false; this.startS = 0; this.calibratedAt = null;
     this.offStart = null; this.undo = [];
@@ -185,12 +185,16 @@ export class LiveLoop {
     const e = this.engine;
     const sNow = e.sAt((e.t ?? 0) - 0.3);   // human reaction ≈ 0.3 s
     switch (name) {
-      case 'start':
+      case 'start': {
         if (this.started && !p.force) { this.addLog('START ignored: the rally is already running (Reset rally state on Home to start over)'); break; }
-        e.zero(0); this.started = true; this.startS = e.s;
+        // Tapped a few seconds after pulling away from the start line: the odometer starts where the car was.
+        const now = this.clock.nowTod(), pa = this.pulledAway(30);
+        e.zero(0, pa?.s ?? e.s); this.started = true; this.startS = pa?.s ?? e.s;
+        this.startTod = now; this.lastRichta = now;   // Richta's beep at the start is this start
         this.progress.jump(this.schedule.rows[0]?.n ?? 1);
-        this.addLog(`Start at ${fmtTod(this.clock.nowTod())}`);
+        this.addLog(`Start at ${fmtTod(now)}${pa ? ` (mileage from where the car pulled away, ${Math.round(now - pa.tod)} s earlier)` : ''}`);
         break;
+      }
       case 'mark': {
         if (!this.started) { this.action('start'); break; }
         const D = e.Dof(sNow);
@@ -255,7 +259,7 @@ export class LiveLoop {
         // The segment's last control (the next timed line is a restart): no timing until that restart.
         const rows = this.schedule.rows, rs = restartNext(rows, (this.progress?.idx ?? rows.length) - 1);
         const resets = !rs && this.settings.legStyle === 'control';
-        if (rs) { this.ev.segEnds.push({ D, tod }); this.undo.push({ kind: 'segend' }); this.rebuild(); }
+        if (rs) { this.ev.segEnds.push({ D, tod }); this.ev.endBeeps.push(rs.n); this.undo.push({ kind: 'segend', rs: rs.n }); this.rebuild(); }
         if (resets) { this.ev.restarts.push({ D, tod }); this.undo.push({ kind: 'restart' }); this.rebuild(); }
         const had = delta !== null ? ` (the app had you ${Math.abs(delta).toFixed(1)} s ${delta >= 0 ? 'late' : 'early'})` : '';
         this.addLog(rs ? `Segment done at ${fmtTod(tod)}${had}: no timing until the restart at #${rs.n}`
@@ -278,10 +282,21 @@ export class LiveLoop {
           else this.addLog(`Richta beep ${p.via === 'mic' ? 'heard' : 'tapped'} at ${fmtTod(tod)}, before the start: ignored (START is at ${fmtTod(at)})`);
           break;
         }
+        if (this.startTod != null && tod - this.startTod < 60 && D < 0.1) { this.addLog('Richta beep at the start: the rally is already running'); break; }
         const rs = this.pendingRestart(D);
         // Segment done but the restart is still well ahead: another checkpoint's beep, not the restart's.
         if (rs && this.schedule.waitingAt(D) && rs.D !== null && D < rs.D - 0.3) {
           this.addLog(`Richta beep ${(rs.D - D).toFixed(2)} mi before restart #${rs.n}: still no timing until the restart`, { claim: true });
+          break;
+        }
+        // The app ended the segment by a printed checkpoint's mileage: Richta's first beep within 0.25 mi of it is
+        // that checkpoint's, not the restart's (else a stop at the bridge would count as time in the next segment).
+        // Short of a restart with mileage, its own mileage starts it anyway if this was its beep after all.
+        const se = this.schedule.events.filter((x) => x.kind === 'segment_end' && x.D <= D + 1e-9).at(-1);
+        if (rs && this.schedule.waitingAt(D) && se && Number.isFinite(se.n) && D - se.D <= 0.25 && !this.ev.endBeeps.includes(rs.n)
+          && !(rs.D !== null && D >= rs.D)) {
+          this.ev.endBeeps.push(rs.n); this.undo.push({ kind: 'cpbeep', rs: rs.n });
+          this.addLog(`Richta beep at checkpoint #${se.n}: segment done, no timing until the restart at #${rs.n}`, { claim: true });
           break;
         }
         if (rs && (this.schedule.waitingAt(D) || (rs.D !== null && D >= rs.D - 0.1))) { this.startSegment(rs, tod, D, p.via); break; }
@@ -335,9 +350,10 @@ export class LiveLoop {
         const u = this.undo.pop();
         if (!u) break;
         if (u.kind === 'ta') this.ev.tas.pop();
-        if (u.kind === 'segend' || u.kind === 'segstart') this.lastRichta = null;   // a corrected beep can be signalled again
+        if (u.kind === 'segend' || u.kind === 'segstart' || u.kind === 'cpbeep') this.lastRichta = null;   // a corrected beep can be signalled again
         if (u.kind === 'rejoin') e.s = u.s;
         if (u.kind === 'segend') this.ev.segEnds.pop();
+        if (u.kind === 'segend' || u.kind === 'cpbeep') { const i = this.ev.endBeeps.lastIndexOf(u.rs); if (i >= 0) this.ev.endBeeps.splice(i, 1); }
         if (u.kind === 'segstart') {
           if (u.restarted) this.ev.restarts.pop();
           if (u.marked) delete this.ev.marks[u.n];
@@ -351,7 +367,7 @@ export class LiveLoop {
           Object.assign(e, { theta: u.theta, Ptheta: u.Ptheta, calibrated: u.calibrated });
           this.calibratedAt = u.calibratedAt; this.progress.idx = u.idx; this.progress.done = new Set(u.done); this.calWarn = null;
         }
-        const UNDONE = { segend: 'segment done', segstart: 'segment start', ta: 'delay time', restart: 'restart', mark: 'MARK', checkpoint: 'checkpoint time', here: "we're here", calibrate: 'odometer check', rejoin: 'back on the route' };
+        const UNDONE = { segend: 'segment done', cpbeep: 'checkpoint beep', segstart: 'segment start', ta: 'delay time', restart: 'restart', mark: 'MARK', checkpoint: 'checkpoint time', here: "we're here", calibrate: 'odometer check', rejoin: 'back on the route' };
         this.rebuild(); this.addLog(`Undone: ${UNDONE[u.kind] ?? u.kind}`);
         break;
       }
@@ -377,6 +393,20 @@ export class LiveLoop {
     } else this.calWarn = null;
   }
 
+  // A printed restart time for this car (+ car number minutes when the line says so).
+  restartTod(r) { return parseTod(r.restart_tod) + (r.restart_plus_car ? 60 * (this.settings.carNumber ?? 0) : 0); }
+  // Raw distance at an earlier clock time (the engine keeps the last 120 s).
+  sAtTod(tod) { const e = this.engine; return e.sAt((e.t ?? 0) - (this.clock.nowTod() - tod)); }
+  // Where the car pulled away after a stop in the last withinS seconds ({s, tod}), or null (still stopped, or no stop).
+  pulledAway(withinS) {
+    const e = this.engine, h = e.hist, tE = e.t ?? 0;
+    for (let i = h.length - 1; i > 0; i--) {
+      if (h[i].t < tE - withinS) break;
+      if (h[i].s - h[i - 1].s < 0.3 * Math.max(0.001, h[i].t - h[i - 1].t)) return i === h.length - 1 ? null : { s: h[i].s, tod: this.clock.nowTod() - (tE - h[i].t) };
+    }
+    return null;
+  }
+
   // The next restart line not yet counted (the start of the next segment), or null.
   pendingRestart(D) {
     const rows = this.schedule.rows, k = Math.max(0, (this.progress?.idx ?? 0) - 1);
@@ -388,8 +418,16 @@ export class LiveLoop {
   // at the gate) gets its place from here, and one timed by the crew (any minute, flying) gets its time:
   // the minute the car crossed in (Richta counts the minute at or before the crossing), or the exact time.
   startSegment(rs, tod, D, via = 'tap') {
-    let marked = false, restarted = false;
-    if (rs.D === null) { this.ev.marks[rs.n] = D; marked = true; this.rebuild(); }
+    let marked = false, restarted = false, lateS = null;
+    if (rs.D === null) {
+      // A tap comes seconds after the beep. A timed restart (a printed time, or a whole minute) up to 12 s
+      // before the tap, or 30 s when the car stood still just before it (waiting for its time), is when the
+      // car crossed: the gate is where the car was then, not where it is now.
+      const ref = rs.restart_any === 'minute' ? Math.floor(tod / 60) * 60 : rs.restart_tod ? this.restartTod(rs) : null;
+      const waited = ref !== null && this.sAtTod(ref) - this.sAtTod(ref - 2) < 1;
+      if (ref !== null && tod - ref >= 0 && tod - ref <= (waited ? 30 : 12)) { D = this.engine.Dof(this.sAtTod(ref)); lateS = tod - ref; }
+      this.ev.marks[rs.n] = D; marked = true; this.rebuild();
+    }
     const row = this.schedule.rows.find((r) => r.n === rs.n) ?? rs;
     let t = null;
     if (row.restart_any) {
@@ -398,7 +436,7 @@ export class LiveLoop {
     }
     this.undo.push({ kind: 'segstart', n: row.n, marked, restarted });
     const at = t ?? this.schedule.perfectTimeAt(row.D ?? D);
-    this.addLog(`Segment started at restart #${row.n} (Richta ${via === 'mic' ? 'heard' : 'tapped'})${at !== null ? `: timing from ${fmtTod(at)}` : ''}${marked ? '; mileage from here' : ''}`, { claim: true });
+    this.addLog(`Segment started at restart #${row.n} (Richta ${via === 'mic' ? 'heard' : 'tapped'})${at !== null ? `: timing from ${fmtTod(at)}` : ''}${marked ? (lateS !== null ? `; mileage from where the car was at ${fmtTod(tod - lateS)}, ${Math.round(lateS)} s before the tap` : '; mileage from here') : ''}`, { claim: true });
     if (at !== null) {
       const hh = Math.floor(at / 3600) % 12 || 12, mm = Math.floor(at / 60) % 60;
       this.voice?.speak(`Segment started. Timing from ${hh} ${String(mm).padStart(2, '0')}.`, { key: `segstart:${row.n}`, alert: true });
@@ -470,7 +508,7 @@ export class LiveLoop {
     let waiting = null;
     if (waitRow) {
       // A printed restart time counts down even before the gate is placed (+ car number when it says so).
-      const at = waitRow.restart_tod ? (waitRow.D !== null ? sch.perfectTimeAt(waitRow.D) : parseTod(waitRow.restart_tod) + (waitRow.restart_plus_car ? 60 * (st.carNumber ?? 0) : 0)) : null;
+      const at = waitRow.restart_tod ? (waitRow.D !== null ? sch.perfectTimeAt(waitRow.D) : this.restartTod(waitRow)) : null;
       waiting = { n: waitRow.n, to_mi: waitRow.D !== null ? waitRow.D - D : null, tod: at, in_s: at !== null ? at - now : null, any: waitRow.restart_any ?? null };
     }
     const adv = waiting ? null : targetSpeed({ deltaS: delta, offsetS: offset, castMph: cast, limitMph: lim.mph, defaultLimit: st.defaultLimit, horizonMi: st.horizonMi, horizonS: st.horizonS });
@@ -590,7 +628,7 @@ export class LiveLoop {
   }
   restore(snap) {
     const seconds = Math.max(0, (Date.now() - snap.wallMs) / 1000);
-    this.ev = snap.ev; this.ev.segEnds ??= []; this.started = snap.started; this.startS = snap.startS; this.calibratedAt = snap.calibratedAt; this.offStart = snap.offStart;
+    this.ev = snap.ev; this.ev.segEnds ??= []; this.ev.endBeeps ??= []; this.started = snap.started; this.startS = snap.startS; this.calibratedAt = snap.calibratedAt; this.offStart = snap.offStart;
     this.rebuild();
     if (snap.progress) { this.progress.idx = snap.progress.idx; this.progress.done = new Set(snap.progress.done); }
     const fill = this.engine.restore(snap.engine, { seconds, chord_m: null });

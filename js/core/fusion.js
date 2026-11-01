@@ -184,8 +184,8 @@ export class DistanceEngine {
 
   // ---- Official miles ----
 
-  // Start of the rally (or of the odometer check): D = D0 here.
-  zero(D0 = 0) { this.theta = [D0 - this.theta[1] * this.s / MI, this.theta[1]]; }
+  // Start of the rally (or of the odometer check): D = D0 here, or at the earlier raw distance s.
+  zero(D0 = 0, s = this.s) { this.theta = [D0 - this.theta[1] * s / MI, this.theta[1]]; }
 
   // End of the odometer check leg: official distance from the start point, measured raw distance.
   calibrate({ omStart = 0, sStart = 0, omEnd, sEnd = this.s }) {
