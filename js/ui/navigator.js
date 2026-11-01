@@ -113,6 +113,14 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
     openSheet('Rules from the GIs', h('div', { class: 'nv-rules' }, dg ? digestEls(dg) : h('div', { class: 'muted' }, 'No general instructions were read.')),
       h('div', { class: 'nv-sheet-btns' }, h('button', { class: 'nv-bigbtn', onclick: closeSheet }, 'Close')));
   }
+  // RICHTA BEEPED. In a transit it starts the next timed zone there; when the app thought that start was more than
+  // a mile away, a stray tap would throw the distance far ahead, so it asks first (keeping the time of the tap).
+  function richtaTap() {
+    const rz = live && live.richta_zone, tod = live ? live.t_s : null;
+    if (rz && rz.start && rz.mi > 1 && tod != null) {
+      confirmSheet(`Richta beeped where timed zone #${rz.n} starts? The app thought that was ${rz.mi.toFixed(1)} mi ahead.`, 'Yes, start it', () => act('richta', { via: 'tap', tod }));
+    } else act('richta', { via: 'tap' });
+  }
   // CAST: the average speed in force, corrected to what the paper says (a misread 38 taken as 33, say).
   function castSheet() {
     const inp = h('input', { type: 'number', inputmode: 'numeric', min: '5', max: '80', step: '1', value: String(live && live.cast_mph || '') });
@@ -156,7 +164,7 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
   const buttons = h('div', { class: 'nv-buttons' },
     btn('MARK', 'nv-mark', () => act('mark')),
     h('div', { class: 'nv-actions' },
-      btn('RICHTA BEEPED', 'nv-go', () => act('richta', { via: 'tap' })), E.taBtn = btn('TA', '', taSheet), btn('Undo last', '', () => act('undo')),
+      btn('RICHTA BEEPED', 'nv-go', () => richtaTap()), E.taBtn = btn('TA', '', taSheet), btn('Undo last', '', () => act('undo')),
       btn('Restart time', '', restartSheet), E.offBtn,
       btn('End odo check', '', () => confirmSheet('End odometer check?', 'End check', () => act('odo_end'))),
       btn('More', '', () => moreSheet())));
@@ -172,7 +180,7 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
   // Simple mode: six big buttons, each saying what it's for. The fourth slot is START before the start and
   // BACK ON ROUTE after a missed turn or when off course; it keeps its place (empty) otherwise.
   const big = (label, sub, cls, fn) => h('button', { class: `nv-sbtn ${cls}`, onclick: fn }, h('b', {}, label), h('small', {}, sub));
-  E.richtaBtn = big('RICHTA BEEPED', 'tap each time Richta beeps', 'nv-s-richta', () => act('richta', { via: 'tap' }));
+  E.richtaBtn = big('RICHTA BEEPED', 'tap each time Richta beeps', 'nv-s-richta', () => richtaTap());
   E.richtaSub = E.richtaBtn.querySelector('small');
   E.markBtn = big('MARK', 'as you pass a sign or landmark', 'nv-s-mark', () => act('mark'));
   E.delayBtn = big('DELAY', 'held up? add time', 'nv-s-delay', taSheet);

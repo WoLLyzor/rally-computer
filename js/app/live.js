@@ -14,6 +14,16 @@ const wrap180 = (d) => ((d + 540) % 360) - 180;
 const fmtMS = (s) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
 const sayMS = (s) => { const m = Math.floor(s / 60), r = Math.round(s % 60); return m ? `${m} minute${m > 1 ? 's' : ''}${r ? ` ${r}` : ''}` : `${r} seconds`; };
 
+// A rally of transits and timed zones (Lake Erie, 2026-11-01): only the timed zones are scored, each timed from
+// where it starts (Richta's beep there, or the car passing its ETZ). A printed time on a line (read as a restart
+// time), any-minute restarts, staffed controls and a pause over 5 minutes (a misread unit) don't apply.
+function zoneTimingOnly(r) {
+  const ctl = r.control === 'open' || r.control === 'diyc';
+  if (!r.restart_tod && !r.restart_any && !ctl && !(r.pause_s > 300) && !(r.gain_s > 300)) return r;
+  return { ...r, restart_tod: null, restart_plus_car: false, restart_any: null, control: ctl ? 'passage' : r.control,
+    pause_s: r.pause_s > 300 ? 0 : r.pause_s, gain_s: r.gain_s > 300 ? 0 : r.gain_s };
+}
+
 export class LiveLoop {
   constructor({ settings, clock, voice, onLog = () => {} }) {
     Object.assign(this, { settings, clock, voice, onLog });
@@ -44,7 +54,13 @@ export class LiveLoop {
   // keepPlace: a line edited or checked during the drive keeps the place in the route; a new route starts over.
   setRoute(instructions, { keepPlace = false } = {}) {
     const keep = keepPlace && this.started && this.progress ? { n: this.progress.next?.n ?? null, done: [...this.progress.done] } : null;
-    this.instructions = instructions; this.progress = null; this.rebuild();
+    this.instructions = instructions; this.progress = null;
+    this.zoneRally = instructions.some((r) => r.zone === 'transit' && zoneEdge(r));
+    this.rebuild();
+    if (this.zoneRally) {
+      const off = instructions.filter((r) => zoneTimingOnly(r) !== r).map((r) => `#${r.n}`);
+      if (off.length) this.addLog(`Timed zones only: printed times, restarts, staffed controls and long pauses on ${off.join(', ')} don't apply`);
+    }
     if (keep) {
       const i = this.schedule.rows.findIndex((r) => r.n === keep.n);
       this.progress.idx = i >= 0 ? i : this.schedule.rows.length;
@@ -55,7 +71,8 @@ export class LiveLoop {
 
   rebuild() {
     const st = this.settings, fix = this.ev.castFix ?? {};
-    const ins = Object.keys(fix).length ? this.instructions.map((r) => (fix[r.n] > 0 ? { ...r, cast_mph: fix[r.n] } : r)) : this.instructions;
+    let ins = Object.keys(fix).length ? this.instructions.map((r) => (fix[r.n] > 0 ? { ...r, cast_mph: fix[r.n] } : r)) : this.instructions;
+    if (this.zoneRally) ins = ins.map(zoneTimingOnly);
     this.schedule = buildSchedule(ins, { startTod: carStartTod(st.baseStart, st.carNumber), carNumber: st.carNumber, marks: this.ev.marks, live: this.ev });
     const rows = this.schedule.rows;
     if (!this.progress) this.progress = new RouteProgress(rows); else this.progress.setRows(rows);
@@ -303,7 +320,8 @@ export class LiveLoop {
         // Transit zones: only the timed zones between them are scored. A beep where a timed zone starts (its ETZ)
         // starts it and one where it ends (a BTZ) ends it; either way the step and the distance go to that line.
         const zb = this.zoneBeep(D);
-        if (zb) { this.zoneEdgeBeep(zb.row, zb.start, tod, sNow, p.via); break; }
+        // A tap confirmed a moment later (a far jump) says when it was tapped: the place is where the car was then.
+        if (zb) { this.zoneEdgeBeep(zb.row, zb.start, tod, p.tod != null ? this.sAtTod(tod) : sNow, p.via); break; }
         const rs = this.pendingRestart(D);
         // Segment done but the restart is still well ahead: another checkpoint's beep, not the restart's.
         if (rs && this.schedule.waitingAt(D) && rs.D !== null && D < rs.D - 0.3) {
@@ -655,6 +673,8 @@ export class LiveLoop {
     } else if (this.heldAt != null && lr?.n !== this.heldAt) this.heldAt = null;
     const pr = this.started ? this.progress.update(D) : { next: sch.rows[0] ?? null, alert: null };
     if (this.recover && pr.alert) { this.progress.clearAlert(); pr.alert = null; }   // the distance itself is in doubt
+    // No wrong-turn calls in a transit: only the timed zones count, and a stop off the route there is fine.
+    if (pr.alert && sch.inTransit(D)) { this.progress.clearAlert(); pr.alert = null; }
     // A turn the gyro missed (a gap in its data, an odd junction): the GPS course across the point
     // confirms it, so no false "Missed turn?".
     if (pr.alert && !pr.alert.checked) {
@@ -750,8 +770,8 @@ export class LiveLoop {
       alert, hold, waiting, ta_suggest: ta && ta.taS > 0 ? ta : null,
       health: { ...e.health, k: e.K, last_resync: this.lastResync ?? '' },
       speed_mph: e.v / 0.44704, stopped: e.v < 0.3, unit: st.timingUnit, started: this.started, calibrated: e.calibrated,
-      recovering: !!this.recover, richta_zone: zh ? { n: zh.row.n, start: zh.start } : null, avg_mph: avg, transit_end_n: transitRow?.n ?? null, ta_leg_s: taLeg, ta_max_s: st.taMax_s ?? 1170, leg_style: st.legStyle ?? 'restart',
-      map_hint: this.started ? this.mapHint ?? null : null,   // set by the map: the car left a confident route guess
+      recovering: !!this.recover, richta_zone: zh ? { n: zh.row.n, start: zh.start, mi: zh.row.D - D } : null, avg_mph: avg, transit_end_n: transitRow?.n ?? null, ta_leg_s: taLeg, ta_max_s: st.taMax_s ?? 1170, leg_style: st.legStyle ?? 'restart',
+      map_hint: this.started && !sch.inTransit(D) ? this.mapHint ?? null : null,   // set by the map: the car left a confident route guess
     };
     return this.state;
   }
