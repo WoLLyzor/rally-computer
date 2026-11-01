@@ -215,6 +215,7 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
     E.clock.textContent = fmtTod(l.t_s, U());
     E.taBtn.textContent = l.ta_leg_s ? `TA ${ms(l.ta_leg_s)}` : 'TA';
     if (l.hold) { E.dBig.className = 'nv-dbig ' + (l.hold.go ? 'dv-good' : 'dv-info'); E.dBig.textContent = l.hold.go ? 'GO' : String(Math.max(0, Math.ceil(l.hold.in_s))); E.dWord.textContent = l.hold.go ? 'PAUSE DONE' : 'PAUSE · GO IN'; }
+    else if (l.waiting) { const w = l.waiting, timed = w.in_s !== null && w.in_s !== undefined; E.dBig.className = 'nv-dbig ' + (timed ? 'dv-info' : 'dv-muted'); E.dBig.textContent = timed ? (w.in_s > 0 ? fmtCountdown(w.in_s) : 'GO') : '--'; E.dWord.textContent = timed ? `RESTART #${w.n}` : 'SEGMENT DONE'; }
     else if (l.delta_s == null) { E.dBig.className = 'nv-dbig dv-muted'; E.dBig.textContent = '--'; E.dWord.textContent = ''; }
     else { const v = deltaView(l.delta_s, U()); E.dBig.className = 'nv-dbig ' + v.cls; E.dBig.textContent = v.big; E.dWord.textContent = v.word; }
     const tr = l.zone === 'transit' && l.transit;

@@ -55,6 +55,12 @@ export function mountDriver(container, { unit = 's' } = {}) {
       el.big.className = 'dv-big dv-info dv-small';
       el.big.textContent = fmtCountdown(live.transit.remaining_s);
       el.word.textContent = 'ARRIVE IN';
+    } else if (live.waiting) {
+      // Segment done: no timing until the restart (a countdown when its time is printed).
+      const w = live.waiting, timed = w.in_s !== null && w.in_s !== undefined;
+      el.big.className = 'dv-big dv-small ' + (timed ? (w.in_s > 0 ? 'dv-info' : 'dv-good') : 'dv-muted');
+      el.big.textContent = timed ? (w.in_s > 0 ? fmtCountdown(w.in_s) : 'GO') : '--';
+      el.word.textContent = timed ? `RESTART #${w.n} ${w.in_s > 0 ? 'IN' : 'NOW'}` : `SEGMENT DONE · RESTART #${w.n}`;
     } else if (live.delta_s == null) {
       el.big.className = 'dv-big dv-muted';
       el.big.textContent = '--';

@@ -5,6 +5,7 @@ import { mountVerify } from './ui/verify.js';
 import { mountSettings } from './ui/settings.js';
 import { mountDriver } from './ui/driver.js';
 import { mountNavigator } from './ui/navigator.js';
+import { mountMap } from './ui/map.js';
 import { parseText, reparse } from './core/parser.js';
 import { runChecks, computeLegs, assignSections, normalizeInstruction, fmtTod } from './core/instruction.js';
 import { extractPages, buildDigest } from './core/extract.js';
@@ -210,7 +211,8 @@ function showDrive() {
   ensureLive(); startSensors(); keepAwake();
   const driverOnly = new URLSearchParams(location.search).get('driver') === '1';
   const startBtn = h('button', { onclick: () => { if (!live.started) live.action('start'); startBtn.remove(); } }, 'START (at the start line)');
-  const extras = [h('button', { onclick: connectRaceBox }, 'RaceBox'), h('button', { onclick: () => document.documentElement.requestFullscreen?.() }, '⤢')];
+  const mapBtn = h('button', { onclick: () => setMap(!S.mapOn) }, S.mapOn ? 'List' : 'Map');
+  const extras = [...(driverOnly ? [] : [mapBtn]), h('button', { onclick: connectRaceBox }, 'RaceBox'), h('button', { onclick: () => document.documentElement.requestFullscreen?.() }, '⤢')];
   if (!live.started) extras.unshift(startBtn);
   app.append(topbar('Drive', extras));
   const grid = h('div', { class: `drive${driverOnly ? ' driver-only' : ''}` });
@@ -220,12 +222,26 @@ function showDrive() {
   const digest = S.route?.digest ?? null;
   const nav = mountNavigator(nEl, { instructions: live.schedule.rows, table: live.schedule.table(), unit: S.settings.timingUnit, digest,
     onAction: (name, p) => { live.action(name, p); nav.setRoute(live.schedule.rows, live.schedule.table(), digest); } });
-  S.view = { destroy: () => { driver.destroy(); nav.destroy(); } };
+  // The map, in place of the navigator's list (Map / List in the top bar, or List on the map).
+  const navRoot = nEl.firstElementChild, mEl = h('div', { class: 'mp-pane', hidden: true });
+  nEl.append(mEl);
+  let map = null;
+  function setMap(on) {
+    S.mapOn = on;
+    if (on && !map) map = mountMap(mEl, { onClose: () => setMap(false) });
+    mEl.hidden = !on;
+    if (navRoot) navRoot.hidden = on;
+    mapBtn.textContent = on ? 'List' : 'Map';
+    if (on && live.state) map.update(live.state, live);
+  }
+  if (S.mapOn && !driverOnly) setMap(true);
+  S.view = { destroy: () => { driver.destroy(); nav.destroy(); map?.destroy(); } };
   let k = 0;
   S.driving = true;
   S.timer = setInterval(() => {
     const st = live.tick();
     driver.update(st); nav.update(st);
+    if (map && S.mapOn) map.update(st, live);
     if (++k % 10 === 0) {
       saveLive();
       nav.setLog(live.log.slice(-200).reverse());

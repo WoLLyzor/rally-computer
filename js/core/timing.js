@@ -28,7 +28,7 @@ export function resolveRoute(instructions, { marks = {}, pins = {} } = {}) {
 }
 
 // Event phases at the same D: arrival-type first, then absolute restarts, then jumps, then slope.
-const PHASE = { control: 0, transit_end: 1, restart: 1, pause: 2, gain: 2, ta: 2, cast: 3, transit_start: 4, free_start: 5, free_end: 5 };
+const PHASE = { control: 0, segment_end: 0.5, transit_end: 1, restart: 1, pause: 2, gain: 2, ta: 2, cast: 3, transit_start: 4, free_start: 5, free_end: 5 };
 
 // opts: { startTod (s of day at startD), startD = 0, carNumber = 0,
 //         live: { outTimes: {n: tod}, inTimes: {n: tod}, tas: [{D, s}] } }
@@ -58,14 +58,19 @@ export function buildSchedule(instructions, opts = {}) {
     if (r.zone === 'free' && edge === 'start') push('free_start');
     if (r.zone === 'free' && edge === 'end') push('free_end');
   }
+  // The last control of a segment (its next timed line is a restart) ends the segment: no timing from
+  // there until the restart, so the crew can stop at the checkpoint and the next segment starts fresh.
+  // Richta's hidden controls do the same when the navigator logs the beep (live.segEnds).
+  rows.forEach((r, i) => { if (r.action === 'control' && r.D !== null && restartNext(rows, i)) events.push({ D: r.D, n: r.n, kind: 'segment_end', phase: PHASE.segment_end }); });
+  for (const se of live.segEnds || []) events.push({ D: se.D, n: Infinity, kind: 'segment_end', phase: PHASE.segment_end });
   for (const ta of live.tas || []) events.push({ D: ta.D, n: ta.n ?? Infinity, kind: 'ta', phase: PHASE.ta, s: ta.s });
   for (const rs of live.restarts || []) events.push({ D: rs.D, n: rs.n ?? Infinity, kind: 'restart', phase: PHASE.restart, tod: parseTod(rs.tod) });
   // Same point: instructions in numeric order (Art 23.A.2), then the phases within one instruction.
   events.sort((a, b) => a.D - b.D || a.n - b.n || a.phase - b.phase);
 
   // Walk. State: perfect time T0 at D0, slope from mph. T0 null = unknown (no CAST yet / open transit).
-  let D0 = startD, T0 = startTod, mph = null, transit = false, transitStart = null, transitAllow = null, free = false;
-  const bps = [{ D: D0, T: T0, mph, transit, free, kind: 'start', n: 0 }];
+  let D0 = startD, T0 = startTod, mph = null, transit = false, transitStart = null, transitAllow = null, free = false, waiting = false;
+  const bps = [{ D: D0, T: T0, mph, transit, free, waiting, kind: 'start', n: 0 }];
   const perN = {};
   const controls = [];
   const advance = (D) => {
@@ -84,7 +89,8 @@ export function buildSchedule(instructions, opts = {}) {
       case 'pause': if (!transit && T0 !== null) T0 += e.s; break;
       case 'gain': if (!transit && T0 !== null) T0 -= e.s; break;
       case 'ta': if (T0 !== null) T0 += e.s; break;
-      case 'restart': T0 = e.tod; transit = false; break;
+      case 'restart': T0 = e.tod; transit = false; waiting = false; break;
+      case 'segment_end': if (!transit) T0 = null; waiting = true; break;
       case 'transit_start':
         transitStart = T0; transitAllow = e.transit_s ?? null; transit = true; break;
       case 'transit_end': {
@@ -105,7 +111,7 @@ export function buildSchedule(instructions, opts = {}) {
       case 'free_start': free = true; break;
       case 'free_end': free = false; break;
     }
-    bps.push({ D: D0, T: transit ? null : T0, mph, transit, free, kind: e.kind, n: e.n });
+    bps.push({ D: D0, T: transit ? null : T0, mph, transit, free, waiting, kind: e.kind, n: e.n });
     if (Number.isFinite(e.n)) {
       const p = perN[e.n] || (perN[e.n] = { n: e.n, D: e.D, T_arrive: before, T_leave: null });
       p.T_leave = transit ? null : T0;
@@ -142,6 +148,8 @@ export function buildSchedule(instructions, opts = {}) {
     castAt(D) { return findBp(D).mph; },
     inTransit(D) { return findBp(D).transit; },
     inFreeZone(D) { return findBp(D).free; },
+    // Between a segment's last control and the next restart: no timing.
+    waitingAt(D) { return !!findBp(D).waiting; },
     // Inverse: where the car should be at time t (perfect position), or null.
     perfectDistanceAt(t) {
       for (let i = bps.length - 1; i >= 0; i--) {
@@ -170,6 +178,16 @@ export function buildSchedule(instructions, opts = {}) {
 
 function hasTimingEffect(r) {
   return r.cast_mph > 0 || r.pause_s > 0 || r.gain_s > 0 || r.restart_tod || r.restart_any || r.action === 'control' || r.zone === 'transit';
+}
+
+// The restart row if the next line after rows[i] that changes timing (controls aside) is a restart, else null.
+export function restartNext(rows, i) {
+  for (let j = i + 1; j < rows.length; j++) {
+    const r = rows[j];
+    if (r.restart_tod || r.restart_any) return r;
+    if (r.action !== 'control' && hasTimingEffect(r)) return null;
+  }
+  return null;
 }
 
 // Delta in seconds: positive = late (design §7: delta = now − perfect time at the current distance).

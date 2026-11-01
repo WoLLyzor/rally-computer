@@ -4,7 +4,7 @@
 
 import { DistanceEngine, ImuFrame, ImuQuiet, haversine } from '../core/fusion.js';
 import { TurnDetector, RouteProgress } from '../core/turns.js';
-import { buildSchedule, recommendTA, carStartTod, richtaLadder, taPresses } from '../core/timing.js';
+import { buildSchedule, recommendTA, carStartTod, richtaLadder, taPresses, restartNext } from '../core/timing.js';
 import { targetSpeed, capFor, SpeedAnnouncer, LimitTracker } from '../core/speed.js';
 import { buildDelays, plannedOffsetFn, slowdownLossS } from '../core/plan.js';
 import { fmtTod, zoneEdge } from '../core/instruction.js';
@@ -23,7 +23,7 @@ export class LiveLoop {
     this.turns = new TurnDetector();
     this.limits = new LimitTracker();
     this.ann = new SpeedAnnouncer();
-    this.ev = { marks: {}, outTimes: {}, inTimes: {}, tas: [], restarts: [] };
+    this.ev = { marks: {}, outTimes: {}, inTimes: {}, tas: [], restarts: [], segEnds: [] };
     this.instructions = []; this.schedule = null; this.progress = null;
     this.started = false; this.startS = 0; this.calibratedAt = null;
     this.offStart = null; this.undo = [];
@@ -252,9 +252,13 @@ export class LiveLoop {
       }
       case 'beep': {   // Richta chimed at one of its hidden controls
         const tod = p.tod ?? this.clock.nowTod(), D = p.D ?? e.D, delta = p.delta ?? this.state?.delta_s ?? null;
-        const resets = this.settings.legStyle === 'control';
+        // The segment's last control (the next timed line is a restart): no timing until that restart.
+        const rows = this.schedule.rows, rs = restartNext(rows, (this.progress?.idx ?? rows.length) - 1);
+        const resets = !rs && this.settings.legStyle === 'control';
+        if (rs) { this.ev.segEnds.push({ D, tod }); this.undo.push({ kind: 'segend' }); this.rebuild(); }
         if (resets) { this.ev.restarts.push({ D, tod }); this.undo.push({ kind: 'restart' }); this.rebuild(); }
-        this.addLog(`Richta control at ${fmtTod(tod)}${delta !== null ? `: this app said ${Math.abs(delta).toFixed(1)} s ${delta >= 0 ? 'late' : 'early'}` : ''}${resets ? '; next leg timed from here, TA back to 0:00' : ''}`, { claim: true });
+        this.addLog(`Richta control at ${fmtTod(tod)}${delta !== null ? `: this app said ${Math.abs(delta).toFixed(1)} s ${delta >= 0 ? 'late' : 'early'}` : ''}${rs ? `; segment done, no timing until the restart at #${rs.n}` : resets ? '; next leg timed from here, TA back to 0:00' : ''}`, { claim: true });
+        if (rs) this.voice?.speak(`Segment done. Timing starts again at the restart, instruction ${rs.n}.`, { key: `wait:${rs.n}`, alert: true });
         break;
       }
       case 'restart': this.ev.restarts.push({ D: e.D, tod: typeof p.tod === 'number' ? fmtTod(p.tod) : p.tod }); this.undo.push({ kind: 'restart' }); this.rebuild(); this.addLog(`Restart ${p.tod}`); break;
@@ -285,6 +289,7 @@ export class LiveLoop {
         const u = this.undo.pop();
         if (!u) break;
         if (u.kind === 'ta') this.ev.tas.pop();
+        if (u.kind === 'segend') this.ev.segEnds.pop();
         if (u.kind === 'restart') { this.ev.restarts.pop(); if (u.auto) (this.noAuto ??= new Set()).add(u.auto); }   // an undone automatic restart stays undone
         if (u.kind === 'mark') delete this.ev.marks[u.n];
         if (u.kind === 'checkpoint') { if (u.which === 'out') delete this.ev.outTimes[u.n]; else delete this.ev.inTimes[u.n]; }
@@ -376,7 +381,15 @@ export class LiveLoop {
     if (this.started && cast > 0 && e.v >= 0.7 * cast * 0.44704) this.cruiseSince ??= tn; else this.cruiseSince = null;
     const lim = this.limits.current({ mapMph: null, currentN: pr.next?.n ?? null });
     const offset = this.started ? this.offsetFn(D) : 0;
-    const adv = targetSpeed({ deltaS: delta, offsetS: offset, castMph: cast, limitMph: lim.mph, defaultLimit: st.defaultLimit, horizonMi: st.horizonMi, horizonS: st.horizonS });
+    // Between a segment's last control and its restart: no time or speed calls, just the way to the restart
+    // (with a countdown when the restart time is printed).
+    const waitRow = this.started && sch.waitingAt(D) ? sch.rows.find((r) => (r.restart_tod || r.restart_any) && r.D !== null && r.D >= D - 0.2) ?? null : null;
+    let waiting = null;
+    if (waitRow) {
+      const at = waitRow.restart_tod ? sch.perfectTimeAt(waitRow.D) : null;
+      waiting = { n: waitRow.n, to_mi: waitRow.D - D, tod: at, in_s: at !== null ? at - now : null };
+    }
+    const adv = waiting ? null : targetSpeed({ deltaS: delta, offsetS: offset, castMph: cast, limitMph: lim.mph, defaultLimit: st.defaultLimit, horizonMi: st.horizonMi, horizonS: st.horizonS });
     const said = this.ann.update(now, adv);
     const transitRow = this.started && sch.inTransit(D) ? sch.rows.find((r) => r.D !== null && r.D > D && r.zone === 'transit' && zoneEdge(r) === 'end') : null;
     const arrive = transitRow ? sch.perfectTimeAt(transitRow.D) : null;
@@ -393,7 +406,7 @@ export class LiveLoop {
     if (this.calWarn && tn < this.calWarn.until) alert = alert ?? { kind: 'calibration', text: `Odometer factor ${this.calWarn.K.toFixed(3)} looks wrong (${((this.calWarn.K - 1) * 100).toFixed(1)}% off). Tapped End odo check at the wrong place? Then Undo last.` };
     if (e.health.racebox === 'lost' && e.health.gps !== 'ok' && this.started) alert = alert ?? { kind: 'gps_lost', text: 'No GPS: distance is estimated' };
 
-    this.cues({ D, next, delta, speak: said.speak, display: said.display, cap: adv?.cap ?? null, alert, hold });
+    this.cues({ D, next, delta, speak: said.speak, display: said.display, cap: adv?.cap ?? null, alert, hold, waiting });
 
     this.state = {
       t_s: now, d_om: D - base, D, section: next?.section ?? 1, delta_s: delta, perfect_t: perfect,
@@ -402,7 +415,7 @@ export class LiveLoop {
       after: after.map((r) => ({ n: r.n, om: r.om, text: r.text, ins: r })),
       zone: sch.inFreeZone(D) ? 'free' : transitRow ? 'transit' : null,
       transit: transitRow && arrive !== null ? { arrive_tod: arrive, remaining_s: arrive - now } : null,
-      alert, hold, ta_suggest: ta && ta.taS > 0 ? ta : null,
+      alert, hold, waiting, ta_suggest: ta && ta.taS > 0 ? ta : null,
       health: { ...e.health, k: e.K, last_resync: this.lastResync ?? '' },
       speed_mph: e.v / 0.44704, stopped: e.v < 0.3, unit: st.timingUnit, started: this.started, calibrated: e.calibrated,
       recovering: !!this.recover, ta_leg_s: taLeg, ta_max_s: st.taMax_s ?? 1170, leg_style: st.legStyle ?? 'restart',
@@ -410,10 +423,11 @@ export class LiveLoop {
     return this.state;
   }
 
-  cues({ D, next, delta, speak, display, cap, alert, hold }) {
+  cues({ D, next, delta, speak, display, cap, alert, hold, waiting }) {
     const v = this.voice;
     if (!v || !this.started) return;
     if (alert && alert.kind === 'missed_turn') v.speak(`Check. Possible missed turn, instruction ${this.progress.alert.n}.`, { key: `miss:${this.progress.alert.n}`, alert: true });
+    if (waiting) v.speak(`Segment done. Timing starts again at the restart, instruction ${waiting.n}.`, { key: `wait:${waiting.n}` });
     if (hold) {
       // Pause at a stop: a countdown instead of time and speed calls.
       if (hold.go) v.speak('Go.', { key: `go:${hold.n}`, alert: true });
@@ -473,7 +487,7 @@ export class LiveLoop {
   }
   restore(snap) {
     const seconds = Math.max(0, (Date.now() - snap.wallMs) / 1000);
-    this.ev = snap.ev; this.started = snap.started; this.startS = snap.startS; this.calibratedAt = snap.calibratedAt; this.offStart = snap.offStart;
+    this.ev = snap.ev; this.ev.segEnds ??= []; this.started = snap.started; this.startS = snap.startS; this.calibratedAt = snap.calibratedAt; this.offStart = snap.offStart;
     this.rebuild();
     if (snap.progress) { this.progress.idx = snap.progress.idx; this.progress.done = new Set(snap.progress.done); }
     const fill = this.engine.restore(snap.engine, { seconds, chord_m: null });

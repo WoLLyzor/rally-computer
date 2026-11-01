@@ -15,6 +15,7 @@
  "js/core/extract.js",
  "js/core/fusion.js",
  "js/core/instruction.js",
+ "js/core/mapview.js",
  "js/core/parser.js",
  "js/core/plan.js",
  "js/core/speed.js",
@@ -26,11 +27,13 @@
  "js/sensors/ubx.js",
  "js/ui/dom.js",
  "js/ui/driver.js",
+ "js/ui/map.js",
  "js/ui/navigator.js",
  "js/ui/scan.js",
  "js/ui/settings.js",
  "js/ui/times.js",
  "js/ui/verify.js",
  "manifest.webmanifest",
+ "map/roads.json",
  "vendor/anthropic-sdk.mjs"
 ]

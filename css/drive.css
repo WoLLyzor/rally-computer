@@ -85,6 +85,19 @@
 .nv-tadown summary{cursor:pointer;padding:8px 0;color:var(--muted)}
 .nv-sheet-note{color:var(--muted);margin:0 0 10px;font-size:1rem}
 
+/* ---- map (in place of the navigator's list) ---- */
+.mp-pane{position:absolute;inset:0}
+.mp-root{position:absolute;inset:0;background:#0e1217;overflow:hidden}
+.mp-canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.mp-tools{position:absolute;top:8px;right:8px;display:flex;flex-direction:column;gap:8px}
+.mp-btn{min-width:64px;min-height:64px;font-size:1.7rem;font-weight:700;background:rgba(21,26,32,.92)}
+.mp-list{font-size:1.15rem;border-color:var(--info);color:var(--info)}
+.mp-speed{position:absolute;top:8px;left:8px;background:rgba(21,26,32,.92);border:1px solid var(--line);border-radius:var(--r);padding:4px 14px;font-size:2rem;font-weight:800}
+.mp-speed:empty,.mp-road:empty{display:none}
+.mp-road{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);background:rgba(21,26,32,.92);border:1px solid var(--line);border-radius:999px;padding:6px 18px;font-size:1.3rem;font-weight:700;white-space:nowrap;max-width:70%;overflow:hidden;text-overflow:ellipsis}
+.mp-status{position:absolute;left:16px;right:16px;top:40%;text-align:center;font-size:1.25rem;color:var(--muted)}
+.mp-attr{position:absolute;left:6px;bottom:2px;font-size:.7rem;color:var(--muted)}
+
 @media (orientation:portrait){
   .nv-cols{grid-template-columns:1fr;grid-template-rows:minmax(0,38%) minmax(0,1fr)}
 }

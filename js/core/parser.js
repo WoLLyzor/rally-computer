@@ -273,7 +273,10 @@ export function parseBody(bodyRaw) {
     eat(tod);
   } else {
     const rm = up.match(RESTART_MINUTE_RE), rf = rm ? null : up.match(RESTART_FLYING_RE);
-    if (rm || rf) { r.restart_any = rm ? 'minute' : 'flying'; eat(rm || rf); }
+    // A bare RESTART (a restart gate; not a quoted sign) is timed from the moment the car crosses it, like a
+    // flying restart. For an on-the-minute restart crossed at :00 that's within a few seconds of the minute.
+    const rb = rm || rf ? null : up.replace(/"[^"]*"/g, (q) => ' '.repeat(q.length)).match(/\bRESTART\b/);
+    if (rm || rf || rb) { r.restart_any = rm ? 'minute' : 'flying'; eat(rm || rf || rb); }
   }
   const ta = up.match(TRANSIT_ALLOW_RE);
   if (ta && (r.zone === 'transit' || /TRANSIT/.test(up))) {
