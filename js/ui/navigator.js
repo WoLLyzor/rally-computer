@@ -163,6 +163,7 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
   // BACK ON ROUTE after a missed turn or when off course; it keeps its place (empty) otherwise.
   const big = (label, sub, cls, fn) => h('button', { class: `nv-sbtn ${cls}`, onclick: fn }, h('b', {}, label), h('small', {}, sub));
   E.richtaBtn = big('RICHTA BEEPED', 'tap each time Richta beeps', 'nv-s-richta', () => act('richta', { via: 'tap' }));
+  E.richtaSub = E.richtaBtn.querySelector('small');
   E.markBtn = big('MARK', 'as you pass a sign or landmark', 'nv-s-mark', () => act('mark'));
   E.delayBtn = big('DELAY', 'held up? add time', 'nv-s-delay', taSheet);
   E.ctxBtn = big('START', 'as you leave the start line', 'nv-s-ctx', () => ctxRun());
@@ -263,6 +264,8 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
     E.stats.om.textContent = l.d_om == null || !l.started ? '--' : l.d_om.toFixed(2);
     E.stats.speed.textContent = l.speed_mph == null ? '--' : l.speed_mph.toFixed(1);
     E.stats.cast.textContent = f(l.cast_mph);
+    const rz = l.richta_zone;
+    E.richtaSub.textContent = rz ? `beep at #${rz.n} ${rz.start ? 'starts' : 'ends'} timing` : 'tap each time Richta beeps';
     E.stats.target.textContent = f(l.target_mph);
     E.stats.limit.textContent = l.limit_mph == null ? '–' : Math.round(l.limit_mph) + (l.limit_src === 'default' ? '*' : '');
     const hh = l.health || {};

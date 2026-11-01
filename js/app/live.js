@@ -23,7 +23,8 @@ export class LiveLoop {
     this.turns = new TurnDetector();
     this.limits = new LimitTracker();
     this.ann = new SpeedAnnouncer();
-    this.ev = { marks: {}, outTimes: {}, inTimes: {}, tas: [], restarts: [], segEnds: [], endBeeps: [] };   // endBeeps: restarts whose segment's end Richta has signalled
+    // endBeeps: restarts whose segment's end Richta has signalled; zoneBeeps: transit-zone edges (ETZ, BTZ) set by Richta's beep
+    this.ev = { marks: {}, outTimes: {}, inTimes: {}, tas: [], restarts: [], segEnds: [], endBeeps: [], zoneBeeps: [] };
     this.instructions = []; this.schedule = null; this.progress = null;
     this.started = false; this.startS = 0; this.calibratedAt = null;
     this.offStart = null; this.undo = [];
@@ -295,6 +296,10 @@ export class LiveLoop {
           break;
         }
         if (this.startTod != null && tod - this.startTod < 60 && D < 0.1) { this.addLog('Richta beep at the start: the rally is already running'); break; }
+        // Transit zones: only the timed zones between them are scored. A beep where a timed zone starts (its ETZ)
+        // starts it and one where it ends (a BTZ) ends it; either way the step and the distance go to that line.
+        const zb = this.zoneBeep(D);
+        if (zb) { this.zoneEdgeBeep(zb.row, zb.start, tod, sNow, p.via); break; }
         const rs = this.pendingRestart(D);
         // Segment done but the restart is still well ahead: another checkpoint's beep, not the restart's.
         if (rs && this.schedule.waitingAt(D) && rs.D !== null && D < rs.D - 0.3) {
@@ -365,6 +370,10 @@ export class LiveLoop {
         if (u.kind === 'segend' || u.kind === 'segstart' || u.kind === 'cpbeep' || u.kind === 'tap') this.lastRichta = null;   // a corrected beep can be signalled again
         if (u.kind === 'tap') this.maybeEnd = null;
         if (u.kind === 'rejoin') e.s = u.s;
+        if (u.kind === 'zonebeep') {
+          e.theta = u.theta; e.Ptheta = u.Ptheta; this.progress.idx = u.idx; this.progress.done = new Set(u.done);
+          this.ev.restarts = u.restarts; this.ev.zoneBeeps = u.zoneBeeps; this.lastRichta = null;
+        }
         if (u.kind === 'segend') this.ev.segEnds.pop();
         if (u.kind === 'segend' || u.kind === 'cpbeep') { const i = this.ev.endBeeps.lastIndexOf(u.rs); if (i >= 0) this.ev.endBeeps.splice(i, 1); }
         if (u.kind === 'segstart') {
@@ -380,7 +389,7 @@ export class LiveLoop {
           Object.assign(e, { theta: u.theta, Ptheta: u.Ptheta, calibrated: u.calibrated });
           this.calibratedAt = u.calibratedAt; this.progress.idx = u.idx; this.progress.done = new Set(u.done); this.calWarn = null;
         }
-        const UNDONE = { tap: `${u.what} (it had changed nothing)`, segend: 'segment done', cpbeep: 'checkpoint beep', segstart: 'segment start', ta: 'delay time', restart: 'restart', mark: 'MARK', checkpoint: 'checkpoint time', here: "we're here", calibrate: 'odometer check', rejoin: 'back on the route' };
+        const UNDONE = { tap: `${u.what} (it had changed nothing)`, segend: 'segment done', cpbeep: 'checkpoint beep', segstart: 'segment start', ta: 'delay time', restart: 'restart', mark: 'MARK', checkpoint: 'checkpoint time', here: "we're here", calibrate: 'odometer check', rejoin: 'back on the route', zonebeep: 'timed zone beep' };
         this.rebuild(); this.addLog(`Undone: ${UNDONE[u.kind] ?? u.kind}`);
         break;
       }
@@ -442,6 +451,43 @@ export class LiveLoop {
       && !this.ev.restarts.some((x) => x.n === r.n || (r.D !== null && Math.abs(x.D - r.D) <= 0.1))) ?? null;
   }
 
+  // The transit-zone edge a Richta beep at D belongs to ({row, start}), or null. A BTZ within 0.2 mi is a timed
+  // zone's end. In a transit, the ETZ ending it is the next one's start, wherever the distance says the car is;
+  // so is an ETZ passed in the last 0.3 mi that no beep has set yet.
+  zoneBeep(D) {
+    const sch = this.schedule, got = this.ev.zoneBeeps;
+    const edges = sch.rows.filter((r) => r.zone === 'transit' && r.D !== null && !got.includes(r.n));
+    if (!edges.length) return null;
+    const btz = edges.filter((r) => zoneEdge(r) === 'start' && Math.abs(r.D - D) <= 0.2).sort((a, b) => Math.abs(a.D - D) - Math.abs(b.D - D))[0];
+    if (btz) return { row: btz, start: false };
+    const etz = sch.inTransit(D) ? edges.find((r) => zoneEdge(r) === 'end' && r.D > D)
+      : edges.filter((r) => zoneEdge(r) === 'end' && r.D <= D + 1e-9 && D - r.D <= 0.3).at(-1);
+    return etz ? { row: etz, start: true } : null;
+  }
+  // Richta signalled a timed zone's start (an ETZ: timed from the beep, at its CAST) or its end (a BTZ: no timing
+  // until the next start). Either way the step and the distance go to that line.
+  zoneEdgeBeep(row, start, tod, sNow, via) {
+    const e = this.engine, rows = this.schedule.rows, i = rows.indexOf(row);
+    this.undo.push({ kind: 'zonebeep', theta: [...e.theta], Ptheta: e.Ptheta.map((x) => [...x]), idx: this.progress.idx, done: [...this.progress.done],
+      restarts: [...this.ev.restarts], zoneBeeps: [...this.ev.zoneBeeps] });
+    const jump = e.reanchor(row.D, sNow, `#${row.n} Richta ${start ? 'start' : 'end'}`);
+    this.progress.jump(rows[i + 1]?.n ?? row.n); this.progress.done.add(row.n);
+    this.recover = null; this.offStart = null; this.progress.clearAlert();
+    this.ev.zoneBeeps.push(row.n);
+    if (start) this.ev.restarts = [...this.ev.restarts.filter((x) => x.n !== row.n), { D: row.D, tod, n: row.n }];   // replaces a start counted as the car passed
+    this.rebuild();
+    this.lastResync = `#${row.n} Richta ${jump >= 0 ? '+' : ''}${jump.toFixed(3)} mi`;
+    const how = via === 'mic' ? 'heard' : 'tapped', moved = `distance ${jump >= 0 ? '+' : ''}${jump.toFixed(2)} mi`;
+    if (start) {
+      const cast = this.schedule.castAt(row.D);
+      this.addLog(`Timed zone started at #${row.n} (Richta ${how}), ${fmtTod(tod)}${cast ? `, CAST ${cast}` : ''}; ${moved}`, { claim: true });
+      this.voice?.speak(`Timed zone started${cast ? `. Average ${cast}` : ''}.`, { key: `zone:${row.n}`, alert: true });
+    } else {
+      this.addLog(`Timed zone ended at #${row.n} (Richta ${how}): no timing until the next one starts; ${moved}`, { claim: true });
+      this.voice?.speak('Timed zone done. No timing until the next one starts.', { key: `zone:${row.n}`, alert: true });
+    }
+  }
+
   // The car is at restart #rs.n (Richta signalled it): a restart with no mileage (the odometer starts again
   // at the gate) gets its place from here, and one timed by the crew (any minute, flying) gets its time:
   // the minute the car crossed in (Richta counts the minute at or before the crossing), or the exact time.
@@ -493,6 +539,16 @@ export class LiveLoop {
         this.addLog(`Restart #${ra.n} counted at ${fmtTod(t)} (${ra.restart_any === 'minute' ? 'the minute you crossed in' : 'flying'}): check it against Richta's out time`, { claim: true });
         const hh = Math.floor(t / 3600) % 12 || 12, mm = Math.floor(t / 60) % 60, ss = Math.floor(t % 60);
         this.voice?.speak(`Restart counted at ${hh} ${String(mm).padStart(2, '0')}${ra.restart_any === 'flying' ? ` and ${ss} seconds` : ''}.`, { key: `restart:${ra.n}`, alert: true });
+      }
+      // An ETZ (a timed zone's start) passed with no beep for it yet: the zone is timed from the crossing, at its
+      // CAST; the time spent in the transit before it doesn't count. Richta's beep there, if it comes, sets it exactly.
+      const ez = sch.rows.find((r) => r.zone === 'transit' && zoneEdge(r) === 'end' && r.D !== null && D >= r.D && D < r.D + 0.2
+        && !this.ev.zoneBeeps.includes(r.n) && !this.ev.restarts.some((x) => x.n === r.n));
+      if (ez) {
+        const t = now - (D - ez.D) * 1609.344 / (e.K || 1) / e.v;
+        this.ev.restarts.push({ D: ez.D, tod: t, n: ez.n, auto: true }); this.rebuild();
+        this.addLog(`Timed zone started at #${ez.n} as the car passed it, ${fmtTod(t)}: a Richta beep there sets it exactly`, { claim: true });
+        this.voice?.speak('Timed zone started.', { key: `zone-auto:${ez.n}`, alert: true });
       }
     }
     // A beep taken as one of the segment's checkpoints, then the car stands for a minute within half a mile of it
@@ -605,6 +661,7 @@ export class LiveLoop {
       }
     }
     this.cues({ D, next, delta, speak: said.speak, display: said.display, cap: adv?.cap ?? null, alert, hold, waiting });
+    const zh = this.started ? this.zoneBeep(D) : null;   // what a Richta beep here would do (shown on its button)
 
     this.state = {
       t_s: now, d_om: D - base, D, section: next?.section ?? 1, delta_s: delta, perfect_t: perfect,
@@ -616,7 +673,7 @@ export class LiveLoop {
       alert, hold, waiting, ta_suggest: ta && ta.taS > 0 ? ta : null,
       health: { ...e.health, k: e.K, last_resync: this.lastResync ?? '' },
       speed_mph: e.v / 0.44704, stopped: e.v < 0.3, unit: st.timingUnit, started: this.started, calibrated: e.calibrated,
-      recovering: !!this.recover, ta_leg_s: taLeg, ta_max_s: st.taMax_s ?? 1170, leg_style: st.legStyle ?? 'restart',
+      recovering: !!this.recover, richta_zone: zh ? { n: zh.row.n, start: zh.start } : null, ta_leg_s: taLeg, ta_max_s: st.taMax_s ?? 1170, leg_style: st.legStyle ?? 'restart',
       map_hint: this.started ? this.mapHint ?? null : null,   // set by the map: the car left a confident route guess
     };
     return this.state;
@@ -686,7 +743,7 @@ export class LiveLoop {
   }
   restore(snap) {
     const seconds = Math.max(0, (Date.now() - snap.wallMs) / 1000);
-    this.ev = snap.ev; this.ev.segEnds ??= []; this.ev.endBeeps ??= []; this.started = snap.started; this.startS = snap.startS; this.calibratedAt = snap.calibratedAt; this.offStart = snap.offStart;
+    this.ev = snap.ev; this.ev.segEnds ??= []; this.ev.endBeeps ??= []; this.ev.zoneBeeps ??= []; this.started = snap.started; this.startS = snap.startS; this.calibratedAt = snap.calibratedAt; this.offStart = snap.offStart;
     this.rebuild();
     if (snap.progress) { this.progress.idx = snap.progress.idx; this.progress.done = new Set(snap.progress.done); }
     const fill = this.engine.restore(snap.engine, { seconds, chord_m: null });
