@@ -58,21 +58,20 @@ export function learnTones(frames, { binHz, frameS }) {
 }
 
 // Feed it frames as they come; push() returns true once per beep heard, as the beep ends (so a long tone,
-// which isn't a beep, can be told apart).
+// which isn't a beep, can be told apart). Strict, after false beeps on the road (chimes, music, voices): the
+// beep's tone must be the strongest narrow tone in the whole band, by 15 dB at least, for 3 frames at least,
+// and beeps are 10 s apart at the closest.
 export class BeepDetector {
-  constructor(sound, { binHz = sound.binHz, frameS = 0.03, refractoryS = 3 } = {}) {
+  constructor(sound, { binHz = sound.binHz, frameS = 0.03, refractoryS = 10 } = {}) {
     this.sound = sound; this.binHz = binHz; this.frameS = frameS; this.refractoryS = refractoryS;
     this.bins = sound.tones.map((hz) => Math.round(hz / binHz));
+    this.lo = Math.max(2, Math.floor(LO_HZ / binHz)); this.hi = Math.ceil(HI_HZ / binHz);
+    this.minDb = Math.max(15, sound.minDb); this.minFrames = Math.max(3, sound.minFrames);
     this.run = 0; this.quietUntil = -Infinity;
   }
   matches(frame) {
-    for (const b of this.bins) {
-      for (let i = b - 2; i <= b + 2; i++) {
-        if (i < 1 || i >= frame.length - 1 || frame[i] < frame[i - 1] || frame[i] < frame[i + 1]) continue;
-        if (contrastAt(frame, i) >= this.sound.minDb) return true;
-      }
-    }
-    return false;
+    const p = bestPeak(frame, this.lo, Math.min(this.hi, frame.length - 2));
+    return p.c >= this.minDb && this.bins.some((b) => Math.abs(p.bin - b) <= 2);
   }
   // t: seconds. muted: our own voice is speaking (never count it).
   push(frame, t, muted = false) {
@@ -80,7 +79,7 @@ export class BeepDetector {
     if (this.matches(frame)) { this.run++; return false; }
     const run = this.run;
     this.run = 0;
-    if (run >= this.sound.minFrames && run <= this.sound.maxFrames && t >= this.quietUntil) { this.quietUntil = t + this.refractoryS; return true; }
+    if (run >= this.minFrames && run <= this.sound.maxFrames && t >= this.quietUntil) { this.quietUntil = t + this.refractoryS; return true; }
     return false;
   }
 }

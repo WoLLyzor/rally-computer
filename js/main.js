@@ -37,15 +37,17 @@ const listener = new RichtaListener({
   isSpeaking: () => typeof speechSynthesis !== 'undefined' && speechSynthesis.speaking,
   onBeep: () => {
     ensureLive();
-    voice.speak('Heard Richta.', { alert: false });
     const n0 = live.log.length;
     live.action('richta', { via: 'mic' });
-    const fresh = live.log.slice(n0);
-    if (fresh.length) S.navApi?.toast(`🎤 Heard Richta. ${fresh[fresh.length - 1].text}`);
+    const fresh = live.log.slice(n0), last = fresh[fresh.length - 1]?.text ?? '';
+    if (/ignored|not counted twice/.test(last)) return;   // not where Richta beeps, or the same beep again: stay quiet
+    voice.speak('Heard Richta.', { alert: false });
+    if (fresh.length) S.navApi?.toast(`🎤 Heard Richta. ${last}`);
   },
 });
-// Off for now: on the road (2026-11-01) it heard beeps that weren't Richta's. The navigator taps instead.
-const HEAR_RICHTA = false;
+// On the road (2026-11-01) it heard beeps that weren't Richta's: the detector is strict now (core/beepdetect.js),
+// and a beep heard in a transit away from the next timed zone's start is ignored (LiveLoop.micPlausible).
+const HEAR_RICHTA = true;
 function syncListener() {
   const want = HEAR_RICHTA && S.settings.listenRichta && S.settings.richtaSound && RichtaListener.supported();
   if (want && !listener.listening) listener.start(S.settings.richtaSound).catch((e) => { console.warn('microphone', e); S.status.mic = `off: ${e.message}`; });
