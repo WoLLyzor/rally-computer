@@ -113,6 +113,18 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
     openSheet('Rules from the GIs', h('div', { class: 'nv-rules' }, dg ? digestEls(dg) : h('div', { class: 'muted' }, 'No general instructions were read.')),
       h('div', { class: 'nv-sheet-btns' }, h('button', { class: 'nv-bigbtn', onclick: closeSheet }, 'Close')));
   }
+  // CAST: the average speed in force, corrected to what the paper says (a misread 38 taken as 33, say).
+  function castSheet() {
+    const inp = h('input', { type: 'number', inputmode: 'numeric', min: '5', max: '80', step: '1', value: String(live && live.cast_mph || '') });
+    const bump = (d) => { inp.value = String(Math.max(5, (Number(inp.value) || 0) + d)); };
+    openSheet('CAST now (mph)',
+      h('p', { class: 'nv-sheet-note' }, 'The average speed on the paper for this timed zone. It’s fixed from the line that set it, so the whole zone is timed with it.'),
+      h('div', { class: 'nv-limrow' },
+        h('button', { class: 'nv-bigbtn nv-lim', onclick: () => bump(-1) }, '−1'), inp, h('button', { class: 'nv-bigbtn nv-lim', onclick: () => bump(1) }, '+1')),
+      h('div', { class: 'nv-sheet-btns' },
+        h('button', { class: 'nv-bigbtn', onclick: closeSheet }, 'Cancel'),
+        h('button', { class: 'nv-bigbtn nv-go', onclick: () => { const mph = Number(inp.value); if (mph > 0) { closeSheet(); act('cast', { mph }); } } }, 'Set')));
+  }
   function limitOtherSheet() {
     const inp = h('input', { type: 'number', inputmode: 'numeric', min: '5', max: '85', step: '5', value: String(live && live.limit_mph || 35) });
     openSheet('Speed limit (mph)', inp,
@@ -132,24 +144,22 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
   E.next = h('div', { class: 'nv-next', hidden: true });
   let nextKey = '';
   E.stats = {};
-  const stat = (k, label) => { E.stats[k] = h('b', {}, '--'); return h('div', { class: 'nv-stat' }, h('span', {}, label), E.stats[k]); };
-  const statsRow = h('div', { class: 'nv-stats' }, stat('om', 'OM'), stat('speed', 'SPEED'), stat('cast', 'CAST'), stat('target', 'TARGET'), stat('limit', 'LIMIT'));
+  const stat = (k, label, onclick) => { E.stats[k] = h('b', {}, '--'); return h('div', onclick ? { class: 'nv-stat nv-tap', onclick } : { class: 'nv-stat' }, h('span', {}, label), E.stats[k]); };
+  // Most useful first: the CAST (tap to correct it), your actual average since the zone started, the speed to
+  // drive to be on time, the speed now; the distance last.
+  const statsRow = h('div', { class: 'nv-stats' }, stat('cast', 'CAST ✎', () => castSheet()), stat('avg', 'AVG'), stat('target', 'TARGET'), stat('speed', 'SPEED'), stat('om', 'OM'));
 
   const btn = (label, cls, fn) => h('button', { class: 'nv-bigbtn ' + (cls || ''), onclick: fn }, label);
   E.offBtn = btn('Off course', 'nv-watch', () => { off = !off; syncOff(); act('offcourse', { on: off }); });
   function syncOff() { E.offBtn.textContent = off ? 'Back on course' : 'Off course'; E.offBtn.classList.toggle('nv-on', off); }
-  const limRow = h('div', { class: 'nv-limrow' },
-    [25, 35, 45, 55].map((m) => btn(String(m), 'nv-lim', () => act('limit', { mph: m }))),
-    btn('other', 'nv-lim', limitOtherSheet));
-  // Every control fits on screen at once: MARK, the limits, then one grid, most used first.
+  // Every control fits on screen at once: MARK, then one grid, most used first.
   const buttons = h('div', { class: 'nv-buttons' },
     btn('MARK', 'nv-mark', () => act('mark')),
-    limRow,
     h('div', { class: 'nv-actions' },
       btn('RICHTA BEEPED', 'nv-go', () => act('richta', { via: 'tap' })), E.taBtn = btn('TA', '', taSheet), btn('Undo last', '', () => act('undo')),
-      btn('Staffed control', '', checkpointSheet), btn('Restart time', '', restartSheet), E.offBtn,
+      btn('Restart time', '', restartSheet), E.offBtn,
       btn('End odo check', '', () => confirmSheet('End odometer check?', 'End check', () => act('odo_end'))),
-      btn('Rules', 'nv-rules-btn', rulesSheet), btn('More', '', () => moreSheet())));
+      btn('More', '', () => moreSheet())));
 
   E.dots = {};
   const dot = (k, label) => { E.dots[k] = h('i', { class: 'nv-dot' }); return h('span', { class: 'nv-h' }, E.dots[k], label); };
@@ -192,15 +202,11 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
     const item = (label, note, fn, cls = '') => h('div', { class: 'nv-more-item' },
       h('button', { class: `nv-bigbtn ${cls}`, onclick: () => { closeSheet(); fn(); } }, label), h('div', { class: 'nv-more-note' }, note));
     openSheet('More tools',
-      h('div', { class: 'nv-more-lim' }, h('div', { class: 'nv-more-note' }, 'Speed limit sign (optional): the app never asks for more than this.'),
-        h('div', { class: 'nv-limrow' }, [25, 35, 45, 55].map((m) => h('button', { class: 'nv-bigbtn nv-lim', onclick: () => { closeSheet(); act('limit', { mph: m }); } }, String(m))),
-          h('button', { class: 'nv-bigbtn nv-lim', onclick: limitOtherSheet }, 'other'))),
       h('div', { class: 'nv-more-grid' },
         item('End odo check', 'Once, at the end of the odometer check, if MARK didn’t catch it.', () => confirmSheet('End odometer check?', 'End check', () => act('odo_end'))),
         item(off ? 'Back on course' : 'Off course', 'You took a wrong road: tap now, then again when you’re back where you left the route.', () => { off = !off; syncOff(); act('offcourse', { on: off }); }),
         item('Restart time', 'Fix a restart time that doesn’t match Richta’s.', restartSheet),
-        item('Staffed control', 'Only if a person at a control gives you an out time.', checkpointSheet),
-        item('Rules', 'The rules read from the general instructions.', rulesSheet),
+        item('CAST', 'Correct the average speed in force if it doesn’t match the paper (or tap CAST).', () => castSheet()),
         ...moreItems.map((m) => item(m.label, m.note, m.run))),
       h('div', { class: 'nv-sheet-btns' }, h('button', { class: 'nv-bigbtn', onclick: closeSheet }, 'Close')));
   }
@@ -257,17 +263,17 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
     else if (l.waiting) { const w = l.waiting, timed = w.in_s !== null && w.in_s !== undefined; E.dBig.className = 'nv-dbig ' + (timed ? 'dv-info' : 'dv-muted'); E.dBig.textContent = timed ? (w.in_s > 0 ? fmtCountdown(w.in_s) : 'GO') : '--'; E.dWord.textContent = timed ? `RESTART #${w.n}` : 'SEGMENT DONE'; }
     else if (l.delta_s == null) { E.dBig.className = 'nv-dbig dv-muted'; E.dBig.textContent = '--'; E.dWord.textContent = ''; }
     else { const v = deltaView(l.delta_s, U()); E.dBig.className = 'nv-dbig ' + v.cls; E.dBig.textContent = v.big; E.dWord.textContent = v.word; }
-    const tr = l.zone === 'transit' && l.transit;
+    const tr = l.zone === 'transit';
     E.transit.hidden = !tr;
-    if (tr) E.transit.textContent = `TRANSIT · arrive ${fmtTod(tr.arrive_tod, U())} · in ${fmtCountdown(tr.remaining_s)}`;
+    if (tr) E.transit.textContent = `TRANSIT · no timing until the next timed zone (#${l.transit_end_n})`;
     const f = (v) => (v == null ? '--' : Math.round(v));
     E.stats.om.textContent = l.d_om == null || !l.started ? '--' : l.d_om.toFixed(2);
     E.stats.speed.textContent = l.speed_mph == null ? '--' : l.speed_mph.toFixed(1);
     E.stats.cast.textContent = f(l.cast_mph);
+    E.stats.avg.textContent = l.avg_mph == null ? '--' : l.avg_mph.toFixed(1);
     const rz = l.richta_zone;
     E.richtaSub.textContent = rz ? `beep at #${rz.n} ${rz.start ? 'starts' : 'ends'} timing` : 'tap each time Richta beeps';
     E.stats.target.textContent = f(l.target_mph);
-    E.stats.limit.textContent = l.limit_mph == null ? '–' : Math.round(l.limit_mph) + (l.limit_src === 'default' ? '*' : '');
     const hh = l.health || {};
     for (const k of ['racebox', 'obd', 'gps']) E.dots[k].className = 'nv-dot nv-' + (hh[k] || 'off');
     E.k.textContent = 'k ' + (hh.k != null ? hh.k.toFixed(4) : '--');

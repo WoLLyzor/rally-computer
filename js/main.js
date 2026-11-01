@@ -44,8 +44,10 @@ const listener = new RichtaListener({
     if (fresh.length) S.navApi?.toast(`🎤 Heard Richta. ${fresh[fresh.length - 1].text}`);
   },
 });
+// Off for now: on the road (2026-11-01) it heard beeps that weren't Richta's. The navigator taps instead.
+const HEAR_RICHTA = false;
 function syncListener() {
-  const want = S.settings.listenRichta && S.settings.richtaSound && RichtaListener.supported();
+  const want = HEAR_RICHTA && S.settings.listenRichta && S.settings.richtaSound && RichtaListener.supported();
   if (want && !listener.listening) listener.start(S.settings.richtaSound).catch((e) => { console.warn('microphone', e); S.status.mic = `off: ${e.message}`; });
   else if (!want && listener.listening) listener.stop();
 }
@@ -265,7 +267,7 @@ function showDrive() {
   const startBtn = h('button', { onclick: () => { if (!live.started) live.action('start'); startBtn.remove(); } }, 'START (at the start line)');
   S.mapOn ??= store.get('mapOn', true);
   const mapBtn = h('button', { onclick: () => setMap(!S.mapOn) }, 'Map');
-  const extras = [...(S.settings.listenRichta && S.settings.richtaSound ? [h('span', { class: 'badge good' }, '🎤 Hearing Richta')] : []),
+  const extras = [...(HEAR_RICHTA && S.settings.listenRichta && S.settings.richtaSound ? [h('span', { class: 'badge good' }, '🎤 Hearing Richta')] : []),
     ...(driverOnly ? [] : [h('button', { onclick: () => infoSheet('Hints', HINTS) }, 'Hints'), h('button', { onclick: () => infoSheet('Glossary: rally words', GLOSSARY) }, 'Glossary'), mapBtn]),
     h('button', { onclick: connectRaceBox }, 'Connect RaceBox'), h('button', { onclick: () => document.documentElement.requestFullscreen?.() }, 'Full screen')];
   if (!live.started && !simple) extras.unshift(startBtn);   // simple mode has its own big START
@@ -282,8 +284,8 @@ function showDrive() {
       run: () => { const i = THEMES.findIndex((t) => t[0] === (S.settings.theme ?? 'dark')); setSetting('theme', THEMES[(i + 1) % THEMES.length][0]); applyTheme(); } },
     { label: simple ? 'Show all controls' : 'Simple controls', note: simple ? 'Every button at once, for an experienced navigator.' : 'Back to the six big buttons.',
       run: () => { setSetting('navMode', simple ? 'full' : 'simple'); route(); } },
-    { label: 'Hear Richta: learn its beep', note: 'At check-in: the tablet learns Richta’s beep from its Sound Check (15 seconds).', run: learnRichtaSheet },
-    ...(S.settings.richtaSound ? [{ label: S.settings.listenRichta ? 'Hear Richta: turn off' : 'Hear Richta: turn on',
+    ...(HEAR_RICHTA ? [{ label: 'Hear Richta: learn its beep', note: 'At check-in: the tablet learns Richta’s beep from its Sound Check (15 seconds).', run: learnRichtaSheet }] : []),
+    ...(HEAR_RICHTA && S.settings.richtaSound ? [{ label: S.settings.listenRichta ? 'Hear Richta: turn off' : 'Hear Richta: turn on',
       note: S.settings.listenRichta ? 'Stop listening. Turn it off if the car speakers start acting like a phone call.' : 'The tablet listens and taps RICHTA BEEPED for you; you can still tap it.',
       run: () => { setSetting('listenRichta', !S.settings.listenRichta); syncListener(); route(); } }] : []),
   ];

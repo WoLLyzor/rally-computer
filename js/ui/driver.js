@@ -24,10 +24,9 @@ export function mountDriver(container, { unit = 's' } = {}) {
   el.word = h('div', { class: 'dv-word' }, '');
   el.delta = h('div', { class: 'dv-delta' }, el.big, el.word);
   el.target = h('div', { class: 'dv-target' }, '--');
-  el.limit = h('div', { class: 'dv-limit' }, '');
-  el.atlim = h('div', { class: 'dv-atlim', hidden: true }, 'at limit');
+  el.avg = h('div', { class: 'dv-limit' }, '');   // your actual average since the timed zone started
   el.speed = h('div', { class: 'dv-speed' },
-    el.target, h('div', { class: 'dv-mph' }, 'mph'), el.limit, el.atlim);
+    el.target, h('div', { class: 'dv-mph' }, 'mph'), el.avg);
   el.icon = h('div', { class: 'dv-icon' }, '');
   el.dist = h('div', { class: 'dv-dist' }, '');
   el.text = h('div', { class: 'dv-text' }, '');
@@ -44,7 +43,7 @@ export function mountDriver(container, { unit = 's' } = {}) {
     el.alert.hidden = !a;
     if (a) el.alert.textContent = a.text || a.kind;
 
-    const transit = live.zone === 'transit' && live.transit;
+    const transit = live.zone === 'transit';
     el.chip.hidden = live.zone !== 'free';
     root.classList.toggle('dv-transit', !!transit);
     if (live.hold) {
@@ -52,9 +51,10 @@ export function mountDriver(container, { unit = 's' } = {}) {
       el.big.textContent = live.hold.go ? 'GO' : fmtCountdown(live.hold.in_s);
       el.word.textContent = live.hold.go ? `PAUSE #${live.hold.n} DONE` : `PAUSE #${live.hold.n} · GO IN`;
     } else if (transit) {
-      el.big.className = 'dv-big dv-info dv-small';
-      el.big.textContent = fmtCountdown(live.transit.remaining_s);
-      el.word.textContent = 'ARRIVE IN';
+      // Only the timed zones count: no clock to race in a transit.
+      el.big.className = 'dv-big dv-muted dv-small';
+      el.big.textContent = 'TRANSIT';
+      el.word.textContent = 'NO TIMING';
     } else if (live.waiting) {
       // Segment done: no timing until the restart (a countdown when its time is printed).
       const w = live.waiting, timed = w.in_s !== null && w.in_s !== undefined;
@@ -73,8 +73,7 @@ export function mountDriver(container, { unit = 's' } = {}) {
     }
 
     el.target.textContent = live.target_mph != null ? Math.round(live.target_mph) : '--';
-    el.limit.textContent = live.limit_mph != null ? `limit ${Math.round(live.limit_mph)}` : '';
-    el.atlim.hidden = !(live.target_mph != null && live.target_mph === live.limit_mph);
+    el.avg.textContent = live.avg_mph != null ? `avg ${live.avg_mph.toFixed(1)}${live.cast_mph ? ` · CAST ${live.cast_mph}` : ''}` : '';
 
     const nx = live.next;
     if (nx) {

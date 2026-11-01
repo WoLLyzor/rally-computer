@@ -142,6 +142,7 @@ export class RouteProgress {
     const i = this.rows.findIndex((r) => r.n === n);
     if (i < 0) return;
     for (let j = 0; j < i; j++) this.done.add(this.rows[j].n);
+    for (let j = i; j < this.rows.length; j++) this.done.delete(this.rows[j].n);   // set back: the lines ahead aren't done
     this.idx = i; this.alert = null;
   }
 

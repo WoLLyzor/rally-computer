@@ -76,8 +76,8 @@ export function coach(st, ctx = {}) {
     return { title: 'Segment done: no timing now', tone: 'good', act: 'richta',
       text: `${w.any === 'minute' ? 'You can stop. Next segment: leave the restart on any whole minute, crossing just after :00.' : 'You can stop. The next segment starts as you cross the restart.'} Tap RICHTA BEEPED when Richta beeps there; a few seconds late is OK.${where}` };
   }
-  if (st.zone === 'transit' && st.transit) {
-    return { title: `Transit: arrive in ${mmss(st.transit.remaining_s)}`, text: `No timing in the transit. Be at its end by ${fmtTod(st.transit.arrive_tod)}.`, tone: 'info', act: null };
+  if (st.zone === 'transit') {
+    return { title: 'Transit: no timing', text: `Only the timed zones count, so stop if you like. Tap RICHTA BEEPED when Richta beeps where the next one starts (#${st.transit_end_n}).`, tone: 'info', act: null };
   }
 
   const nx = st.next, ins = nx?.ins;

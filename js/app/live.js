@@ -23,8 +23,9 @@ export class LiveLoop {
     this.turns = new TurnDetector();
     this.limits = new LimitTracker();
     this.ann = new SpeedAnnouncer();
-    // endBeeps: restarts whose segment's end Richta has signalled; zoneBeeps: transit-zone edges (ETZ, BTZ) set by Richta's beep
-    this.ev = { marks: {}, outTimes: {}, inTimes: {}, tas: [], restarts: [], segEnds: [], endBeeps: [], zoneBeeps: [] };
+    // endBeeps: restarts whose segment's end Richta has signalled; zoneBeeps: transit-zone edges (ETZ, BTZ) set by Richta's beep;
+    // castFix: {n: mph}, a CAST the navigator corrected (misread on the page)
+    this.ev = { marks: {}, outTimes: {}, inTimes: {}, tas: [], restarts: [], segEnds: [], endBeeps: [], zoneBeeps: [], castFix: {} };
     this.instructions = []; this.schedule = null; this.progress = null;
     this.started = false; this.startS = 0; this.calibratedAt = null;
     this.offStart = null; this.undo = [];
@@ -53,8 +54,9 @@ export class LiveLoop {
   }
 
   rebuild() {
-    const st = this.settings;
-    this.schedule = buildSchedule(this.instructions, { startTod: carStartTod(st.baseStart, st.carNumber), carNumber: st.carNumber, marks: this.ev.marks, live: this.ev });
+    const st = this.settings, fix = this.ev.castFix ?? {};
+    const ins = Object.keys(fix).length ? this.instructions.map((r) => (fix[r.n] > 0 ? { ...r, cast_mph: fix[r.n] } : r)) : this.instructions;
+    this.schedule = buildSchedule(ins, { startTod: carStartTod(st.baseStart, st.carNumber), carNumber: st.carNumber, marks: this.ev.marks, live: this.ev });
     const rows = this.schedule.rows;
     if (!this.progress) this.progress = new RouteProgress(rows); else this.progress.setRows(rows);
     const castAt = (D) => this.schedule.castAt(D);
@@ -327,7 +329,34 @@ export class LiveLoop {
         break;
       }
       case 'restart': this.ev.restarts.push({ D: e.D, tod: typeof p.tod === 'number' ? fmtTod(p.tod) : p.tod }); this.undo.push({ kind: 'restart' }); this.rebuild(); this.addLog(`Restart ${p.tod}`); break;
-      case 'jump': this.progress.jump(p.n); this.addLog(`Next instruction set to #${p.n}`); break;
+      case 'jump': {
+        // "Make #n next": the car is between #n−1 and #n. A distance already at or past #n would take the step
+        // straight back ahead, so it goes back to the line before (We're here at #n then sets it exactly).
+        const rows = this.schedule.rows, i = rows.findIndex((r) => r.n === p.n), row = rows[i];
+        const before = rows.slice(0, Math.max(0, i)).reverse().find((r) => r.D !== null);
+        if (this.started && row?.D != null && before && e.D >= row.D - 0.02) {
+          this.undo.push({ kind: 'here', theta: [...e.theta], Ptheta: e.Ptheta.map((x) => [...x]), idx: this.progress.idx, done: [...this.progress.done], recover: this.recover ?? null });
+          const jump = e.reanchor(before.D, sNow, `#${before.n} (next #${p.n})`);
+          this.recover = null; this.offStart = null;
+          this.addLog(`Next instruction set to #${p.n}: distance set back to #${before.n} (${jump >= 0 ? '+' : ''}${jump.toFixed(2)} mi). Tap #${p.n}, We're here, as you pass it to set it exactly`);
+        } else this.addLog(`Next instruction set to #${p.n}`);
+        this.progress.jump(p.n);
+        break;
+      }
+      case 'cast': {
+        // The navigator corrects the CAST in force (misread on the page): on the line that set it, or on this timed
+        // zone's start when the zone has none of its own yet.
+        const sch = this.schedule, D = e.D;
+        const c = sch.events.filter((x) => x.kind === 'cast' && Number.isFinite(x.n) && x.D <= D + 1e-9).at(-1);
+        const z = sch.events.filter((x) => x.kind === 'restart' && Number.isFinite(x.n) && x.D <= D + 1e-9).at(-1);
+        const n = c && !(z && z.D > c.D) ? c.n : z ? z.n : sch.rows.filter((r) => r.D !== null && r.D <= D + 1e-9).at(-1)?.n;
+        if (n == null || !(p.mph > 0)) break;
+        this.undo.push({ kind: 'cast', n, prev: this.ev.castFix[n] ?? null });
+        const was = sch.castAt(D);
+        this.ev.castFix[n] = p.mph; this.rebuild();
+        this.addLog(`CAST ${p.mph} from #${n}${was ? ` (was ${was})` : ''}`, { claim: true });
+        break;
+      }
       case 'here': {   // the navigator says the car is at instruction #n now (after a pause)
         const rows = this.schedule.rows, i = rows.findIndex((r) => r.n === p.n), row = rows[i];
         if (!this.started) break;
@@ -370,6 +399,7 @@ export class LiveLoop {
         if (u.kind === 'segend' || u.kind === 'segstart' || u.kind === 'cpbeep' || u.kind === 'tap') this.lastRichta = null;   // a corrected beep can be signalled again
         if (u.kind === 'tap') this.maybeEnd = null;
         if (u.kind === 'rejoin') e.s = u.s;
+        if (u.kind === 'cast') { if (u.prev == null) delete this.ev.castFix[u.n]; else this.ev.castFix[u.n] = u.prev; }
         if (u.kind === 'zonebeep') {
           e.theta = u.theta; e.Ptheta = u.Ptheta; this.progress.idx = u.idx; this.progress.done = new Set(u.done);
           this.ev.restarts = u.restarts; this.ev.zoneBeeps = u.zoneBeeps; this.lastRichta = null;
@@ -389,7 +419,7 @@ export class LiveLoop {
           Object.assign(e, { theta: u.theta, Ptheta: u.Ptheta, calibrated: u.calibrated });
           this.calibratedAt = u.calibratedAt; this.progress.idx = u.idx; this.progress.done = new Set(u.done); this.calWarn = null;
         }
-        const UNDONE = { tap: `${u.what} (it had changed nothing)`, segend: 'segment done', cpbeep: 'checkpoint beep', segstart: 'segment start', ta: 'delay time', restart: 'restart', mark: 'MARK', checkpoint: 'checkpoint time', here: "we're here", calibrate: 'odometer check', rejoin: 'back on the route', zonebeep: 'timed zone beep' };
+        const UNDONE = { tap: `${u.what} (it had changed nothing)`, segend: 'segment done', cpbeep: 'checkpoint beep', segstart: 'segment start', ta: 'delay time', restart: 'restart', mark: 'MARK', checkpoint: 'checkpoint time', here: "we're here", calibrate: 'odometer check', rejoin: 'back on the route', zonebeep: 'timed zone beep', cast: 'CAST correction' };
         this.rebuild(); this.addLog(`Undone: ${UNDONE[u.kind] ?? u.kind}`);
         break;
       }
@@ -614,7 +644,11 @@ export class LiveLoop {
       }
     } else this.holdN = null;
     if (this.started && cast > 0 && e.v >= 0.7 * cast * 0.44704) this.cruiseSince ??= tn; else this.cruiseSince = null;
-    const lim = this.limits.current({ mapMph: null, currentN: pr.next?.n ?? null });
+    const lim = { mph: null, src: null };   // the crew doesn't set speed limits: only the default one caps the target
+    // Actual average speed since the last restart (a timed zone's start), or since START; none in a transit.
+    const rb = sch.breakpoints.filter((b) => b.kind === 'restart' && b.T !== null && b.D <= D + 1e-9).at(-1);
+    const ref = rb ? { D: rb.D, t: rb.T } : this.startTod != null ? { D: 0, t: this.startTod } : null;
+    const avg = this.started && ref && now - ref.t > 5 && !sch.inTransit(D) ? Math.max(0, D - ref.D) * 3600 / (now - ref.t) : null;
     const offset = this.started ? this.offsetFn(D) : 0;
     // Between a segment's last control and its restart: no time or speed calls, just the way to the restart
     // (with a countdown when the restart time is printed).
@@ -673,7 +707,7 @@ export class LiveLoop {
       alert, hold, waiting, ta_suggest: ta && ta.taS > 0 ? ta : null,
       health: { ...e.health, k: e.K, last_resync: this.lastResync ?? '' },
       speed_mph: e.v / 0.44704, stopped: e.v < 0.3, unit: st.timingUnit, started: this.started, calibrated: e.calibrated,
-      recovering: !!this.recover, richta_zone: zh ? { n: zh.row.n, start: zh.start } : null, ta_leg_s: taLeg, ta_max_s: st.taMax_s ?? 1170, leg_style: st.legStyle ?? 'restart',
+      recovering: !!this.recover, richta_zone: zh ? { n: zh.row.n, start: zh.start } : null, avg_mph: avg, transit_end_n: transitRow?.n ?? null, ta_leg_s: taLeg, ta_max_s: st.taMax_s ?? 1170, leg_style: st.legStyle ?? 'restart',
       map_hint: this.started ? this.mapHint ?? null : null,   // set by the map: the car left a confident route guess
     };
     return this.state;
@@ -743,7 +777,7 @@ export class LiveLoop {
   }
   restore(snap) {
     const seconds = Math.max(0, (Date.now() - snap.wallMs) / 1000);
-    this.ev = snap.ev; this.ev.segEnds ??= []; this.ev.endBeeps ??= []; this.ev.zoneBeeps ??= []; this.started = snap.started; this.startS = snap.startS; this.calibratedAt = snap.calibratedAt; this.offStart = snap.offStart;
+    this.ev = snap.ev; this.ev.segEnds ??= []; this.ev.endBeeps ??= []; this.ev.zoneBeeps ??= []; this.ev.castFix ??= {}; this.started = snap.started; this.startS = snap.startS; this.calibratedAt = snap.calibratedAt; this.offStart = snap.offStart;
     this.rebuild();
     if (snap.progress) { this.progress.idx = snap.progress.idx; this.progress.done = new Set(snap.progress.done); }
     const fill = this.engine.restore(snap.engine, { seconds, chord_m: null });

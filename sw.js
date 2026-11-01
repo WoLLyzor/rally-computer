@@ -1,6 +1,6 @@
 // Offline cache (A7: full function in airplane mode after the study period). Cache-first for the app's
 // own files; anything cross-origin (the Claude API during the study period) goes to the network.
-const VERSION = '8bdf614ee223';   // tools/build_precache.mjs writes a content hash here
+const VERSION = '07c230a812cd';   // tools/build_precache.mjs writes a content hash here
 const CACHE = `rally-${VERSION}`;
 
 self.addEventListener('install', (event) => {

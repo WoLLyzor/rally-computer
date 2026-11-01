@@ -39,7 +39,9 @@ export function mountMap(container) {
     road, status, h('div', { class: 'mp-attr' }, '© OpenStreetMap contributors'));
   container.append(root);
   // bias: the crew's zoom on top of the automatic one; rot: the drawn heading, eased toward the car's.
-  let bias = 1, mpp = null, last = null, drawnAt = 0, heading = null, rot = null, proj = null, projAt = 0;
+  let bias = 1, mpp = null, last = null, drawnAt = 0, heading = null, rot = null, proj = null, projAt = 0, headingSavedAt = 0;
+  // The driver's view at all times: the last course is kept while stopped, even across a restart of the app.
+  try { const hs = localStorage.getItem('rc.mapHeading'); if (hs !== null && Number.isFinite(Number(hs))) heading = Number(hs); } catch { /* no storage */ }
 
   // Wrong turn? When a confident route guess (85%+ to the next turn) goes one way and the car clearly another
   // for 6 s while moving, the navigator is asked (never told): live.mapHint, shown by the coach line, with
@@ -90,10 +92,14 @@ export function mountMap(container) {
     if (!fix) { status.hidden = false; status.textContent = 'Waiting for a GPS position…'; return; }
     status.hidden = MAP.inside(fix.lat, fix.lon);
     if (!status.hidden) status.textContent = 'Outside the map area (Ashtabula to Erie).';
-    // Heading up: the car's course once it's moving (north up until then), eased so the map turns smoothly.
+    // Heading up: the car's course while moving, the last one while stopped (north up only before the first move
+    // ever), eased so the map turns smoothly.
     const v = (st?.speed_mph ?? 0) * 0.44704;
     const hd = live.headings?.[live.headings.length - 1];
-    if (hd && v > 1.5) heading = hd.h;
+    if (hd && v > 1.5) {
+      heading = hd.h;
+      if (now - headingSavedAt > 5000) { headingSavedAt = now; try { localStorage.setItem('rc.mapHeading', String(Math.round(heading))); } catch { /* no storage */ } }
+    }
     if (heading !== null) rot = rot === null ? heading : (rot + (((heading - rot) % 360 + 540) % 360 - 180) * (force ? 1 : 0.35) + 360) % 360;
     const th = (rot ?? 0) * Math.PI / 180, cos = Math.cos(th), sin = Math.sin(th);
 
@@ -156,7 +162,7 @@ export function mountMap(container) {
     if (proj && proj.path?.length > 1) {
       // The chip: how sure the line is to the next turn (the markers say it for the turns after).
       const pct = Math.round(100 * (proj.turns?.[0]?.path_conf ?? proj.turns?.[0]?.conf ?? proj.conf));
-      guess.hidden = false;
+      guess.hidden = pct < 50;   // a guess under 50% says nothing useful
       guess.className = `mp-guess ${pct >= 75 ? 'mp-g-good' : pct >= 50 ? 'mp-g-watch' : 'mp-g-low'}`;
       guess.textContent = pct >= 30 ? `Route guess: ${pct}% sure` : `Route guess: not sure (${pct}%)`;
       if (pct >= 30) {
