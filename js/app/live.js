@@ -184,6 +184,14 @@ export class LiveLoop {
   action(name, p = {}) {
     const e = this.engine;
     const sNow = e.sAt((e.t ?? 0) - 0.3);   // human reaction ≈ 0.3 s
+    const u0 = this.undo.length;
+    this.act(name, p, e, sNow);
+    // A RICHTA BEEPED or MARK tap that changed nothing still gets its own UNDO entry, so UNDO right after it
+    // takes back that tap and not something older (a calibration, a restart).
+    if ((name === 'richta' || name === 'mark') && this.started && this.undo.length === u0) this.undo.push({ kind: 'tap', what: name === 'mark' ? 'MARK' : 'Richta beep' });
+  }
+
+  act(name, p, e, sNow) {
     switch (name) {
       case 'start': {
         if (this.started && !p.force) { this.addLog('START ignored: the rally is already running (Reset rally state on Home to start over)'); break; }
@@ -207,7 +215,7 @@ export class LiveLoop {
           this.ev.marks[res.row.n] = res.markD; this.rebuild();
           this.addLog(`MARK #${res.row.n} at ${res.markD.toFixed(3)}`);
         } else if (res.row.odo_check_end && !e.calibrated) {
-          this.calibrateAt(res.row, sNow);
+          this.calibrateAt(res.row, this.odoEndS(res.row, sNow));
         } else if (res.resync && e.calibrated) {
           const r = e.resync(res.resync);
           this.lastResync = `#${res.row.n} mark ${r.residual >= 0 ? '+' : ''}${r.residual.toFixed(3)} mi${r.accepted ? '' : ' (rejected)'}`;
@@ -218,7 +226,7 @@ export class LiveLoop {
       case 'odo_end': {
         const row = this.schedule.rows.find((r) => r.odo_check_end && r.D !== null) ?? this.schedule.rows.find((r) => (r.reset_odo || r.action === 'zero_odo') && r.D !== null);
         if (!row) { this.addLog('End of odometer check: no instruction marks it; enter it in the route'); break; }
-        this.calibrateAt(row, sNow);
+        this.calibrateAt(row, this.odoEndS(row, sNow));
         break;
       }
       case 'limit': this.limits.setNav(p.mph, this.progress?.next?.n ?? null); this.addLog(`Limit ${p.mph}`); break;
@@ -354,7 +362,8 @@ export class LiveLoop {
         const u = this.undo.pop();
         if (!u) break;
         if (u.kind === 'ta') this.ev.tas.pop();
-        if (u.kind === 'segend' || u.kind === 'segstart' || u.kind === 'cpbeep') this.lastRichta = null;   // a corrected beep can be signalled again
+        if (u.kind === 'segend' || u.kind === 'segstart' || u.kind === 'cpbeep' || u.kind === 'tap') this.lastRichta = null;   // a corrected beep can be signalled again
+        if (u.kind === 'tap') this.maybeEnd = null;
         if (u.kind === 'rejoin') e.s = u.s;
         if (u.kind === 'segend') this.ev.segEnds.pop();
         if (u.kind === 'segend' || u.kind === 'cpbeep') { const i = this.ev.endBeeps.lastIndexOf(u.rs); if (i >= 0) this.ev.endBeeps.splice(i, 1); }
@@ -371,7 +380,7 @@ export class LiveLoop {
           Object.assign(e, { theta: u.theta, Ptheta: u.Ptheta, calibrated: u.calibrated });
           this.calibratedAt = u.calibratedAt; this.progress.idx = u.idx; this.progress.done = new Set(u.done); this.calWarn = null;
         }
-        const UNDONE = { segend: 'segment done', cpbeep: 'checkpoint beep', segstart: 'segment start', ta: 'delay time', restart: 'restart', mark: 'MARK', checkpoint: 'checkpoint time', here: "we're here", calibrate: 'odometer check', rejoin: 'back on the route' };
+        const UNDONE = { tap: `${u.what} (it had changed nothing)`, segend: 'segment done', cpbeep: 'checkpoint beep', segstart: 'segment start', ta: 'delay time', restart: 'restart', mark: 'MARK', checkpoint: 'checkpoint time', here: "we're here", calibrate: 'odometer check', rejoin: 'back on the route' };
         this.rebuild(); this.addLog(`Undone: ${UNDONE[u.kind] ?? u.kind}`);
         break;
       }
@@ -404,6 +413,13 @@ export class LiveLoop {
     const rows = this.schedule.rows, i = rows.findIndex((r) => r.n === rs.n);
     const ahead = rows.slice(Math.max(0, this.progress?.idx ?? 0), i).filter((r) => r.D === null || r.D > D + 0.05);
     return !ahead.some((r) => r.action !== 'control' || r.D === null || r.D > D + 0.3);
+  }
+  // The odometer check ends at a T or a STOP and MARK came after the car pulled away from it (up to 15 s): the
+  // end is where the car stood, not where it is now.
+  odoEndS(row, sNow) {
+    const pa = /^(t|stop)$/i.test(row.cue ?? '') ? this.pulledAway(15) : null;
+    if (pa) this.addLog(`Odometer check end taken where the car stood at the ${row.cue === 'T' ? 'T' : 'STOP'}, ${Math.round(this.clock.nowTod() - pa.tod)} s before the tap`);
+    return pa?.s ?? sNow;
   }
   // A printed restart time for this car (+ car number minutes when the line says so).
   restartTod(r) { return parseTod(r.restart_tod) + (r.restart_plus_car ? 60 * (this.settings.carNumber ?? 0) : 0); }
@@ -496,7 +512,7 @@ export class LiveLoop {
     // Counted on the way in, then the car stopped at the restart to wait for its minute: the minute it pulls
     // away in is the one that counts (Richta's minute at or before the crossing out).
     const lr = this.ev.restarts.at(-1), lrRow = lr?.n != null ? sch.rows.find((r) => r.n === lr.n) : null;
-    if (this.started && lrRow?.restart_any === 'minute' && typeof lr.tod === 'number' && D >= lr.D - 0.05 && D < lr.D + 0.1) {
+    if (this.started && lrRow?.restart_any === 'minute' && typeof lr.tod === 'number' && D >= lr.D - 0.3 && D < lr.D + 0.1) {
       if (e.v < 0.5) this.heldAt = lr.n;
       else if (this.heldAt === lr.n && e.v > 2) {
         this.heldAt = null;
