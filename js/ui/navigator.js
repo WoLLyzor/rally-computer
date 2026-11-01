@@ -2,7 +2,7 @@
 // mountNavigator(container, { instructions, table, unit, onAction }) -> { update, setRoute, setLog, destroy }
 import { h, clear, fmtOm, actionSummary, actionIcon, explainEl, digestEls } from './dom.js';
 import { glossaryOf } from '../core/extract.js';
-import { richtaLadder, taPresses } from '../core/timing.js';
+import { richtaLadder, taPresses, restartNext } from '../core/timing.js';
 import { deltaView, fmtCountdown } from './driver.js';
 
 const p2 = (n) => String(n).padStart(2, '0');
@@ -103,10 +103,15 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
   function beepSheet() {
     const resets = live && live.leg_style === 'control';
     const at = live ? { tod: live.t_s, D: live.D, delta: live.delta_s } : {};
-    openSheet('Richta beeped at a control?',
-      h('p', { class: 'nv-sheet-note' }, resets
-        ? 'Logs it and starts the next leg from now, as Richta does when each control starts a new leg. The TA goes back to 0:00.'
-        : 'Logs it with what this app said, to compare with Richta. Timing carries on from the last restart.'),
+    // The time and place are taken now, when the sheet opens, so there's no hurry to confirm.
+    const i = ins.findIndex((r) => r.n === (live && live.next ? live.next.n : null));
+    const rs = i >= 0 ? restartNext(ins, i - 1) : null;
+    openSheet('Richta beeped at a checkpoint?',
+      h('p', { class: 'nv-sheet-note' }, rs
+        ? `Ends this segment: no timing until you cross the restart at #${rs.n}, then it starts fresh. Time taken when you tapped.`
+        : resets
+          ? 'Logs it and starts the next leg from now, as Richta does when each control starts a new leg. The TA goes back to 0:00.'
+          : 'Logs it with what this app said, to compare with Richta. Timing carries on from the last restart.'),
       h('div', { class: 'nv-sheet-btns' },
         h('button', { class: 'nv-bigbtn', onclick: closeSheet }, 'Cancel'),
         h('button', { class: 'nv-bigbtn nv-go', onclick: () => { closeSheet(); act('beep', at); } }, 'Log beep')));
@@ -150,15 +155,15 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
   const limRow = h('div', { class: 'nv-limrow' },
     [25, 35, 45, 55].map((m) => btn(String(m), 'nv-lim', () => act('limit', { mph: m }))),
     btn('other', 'nv-lim', limitOtherSheet));
+  // Every control fits on screen at once: MARK, the limits, then one grid, most used first.
   const buttons = h('div', { class: 'nv-buttons' },
     btn('MARK', 'nv-mark', () => act('mark')),
-    btn('Rules', 'nv-rules-btn', rulesSheet),
     limRow,
-    h('div', { class: 'nv-btnrow' },
-      btn('Checkpoint', '', checkpointSheet), E.taBtn = btn('TA', '', taSheet), btn('Restart', '', restartSheet), btn('Richta ✓', '', beepSheet)),
-    h('div', { class: 'nv-btnrow' },
+    h('div', { class: 'nv-actions' },
+      btn('Checkpoint beep', '', beepSheet), E.taBtn = btn('TA', '', taSheet), btn('Undo last', '', () => act('undo')),
+      btn('Staffed control', '', checkpointSheet), btn('Restart time', '', restartSheet), E.offBtn,
       btn('End odo check', '', () => confirmSheet('End odometer check?', 'End check', () => act('odo_end'))),
-      E.offBtn, btn('Undo last', '', () => act('undo'))));
+      btn('Rules', 'nv-rules-btn', rulesSheet)));
 
   E.dots = {};
   const dot = (k, label) => { E.dots[k] = h('i', { class: 'nv-dot' }); return h('span', { class: 'nv-h' }, E.dots[k], label); };
@@ -166,7 +171,7 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
   const status = h('div', { class: 'nv-status' }, dot('racebox', 'RaceBox'), dot('obd', 'OBD'), dot('gps', 'GPS'), E.k, E.resync);
 
   E.logBody = h('div', { class: 'nv-logbody' });
-  const logPanel = h('details', { class: 'nv-log', open: true }, h('summary', {}, 'Log'), E.logBody);
+  const logPanel = h('details', { class: 'nv-log' }, h('summary', {}, 'Log'), E.logBody);
 
   const right = h('div', { class: 'nv-right' },
     h('div', { class: 'nv-top' }, E.clock, h('div', { class: 'nv-delta' }, E.dBig, E.dWord)),

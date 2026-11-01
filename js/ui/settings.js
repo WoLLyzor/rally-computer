@@ -77,7 +77,7 @@ export function mountSettings(container, opts) {
         seg('taMax_s', [[570, '9:30'], [1170, '19:30']]),
         h('label', null, 'When Richta beeps at a control (the GIs say which)'),
         seg('legStyle', [['restart', 'Timing carries on from the restart'], ['control', 'Next leg starts from that time']]),
-        h('div', { class: 'muted', style: { fontSize: '.9rem', marginTop: '4px' } }, 'Not sure? Keep "carries on". Tap Richta ✓ on the Drive screen at each beep either way. When the beep ends a segment (the next timed line is a restart), the app stops timing until you cross that restart, so each segment starts fresh.'),
+        h('div', { class: 'muted', style: { fontSize: '.9rem', marginTop: '4px' } }, 'Not sure? Keep "carries on". Tap Checkpoint beep on the Drive screen at each Richta beep either way. When the beep ends a segment (the next timed line is a restart), the app stops timing until you cross that restart, so each segment starts fresh.'),
         range('alpha', 'Smoothing alpha', 0, 1, 0.1)),
       h('div', { class: 'panel' },
         h('h2', null, 'Voice'),
