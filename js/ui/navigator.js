@@ -45,7 +45,7 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
         h('button', { class: 'nv-bigbtn', onclick: closeSheet }, 'Cancel'),
         h('button', { class: 'nv-bigbtn nv-go', onclick: () => { closeSheet(); onOk(); } }, okLabel)));
   }
-  // After a pause the distance is in doubt: tapping the instruction the car is at fixes it.
+  // Once started, tapping an instruction can set the distance there (after a pause, or whenever it has drifted).
   function hereSheet(i) {
     openSheet(`Are you at #${i.n} now?`,
       h('p', { class: 'nv-sheet-note' }, `Tap "We're here" as you pass its point: the distance becomes ${fmtOm(i.om)}.`),
@@ -219,7 +219,7 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
     for (const i of ins) {
       const t = byN.get(i.n);
       const row = h('div', { class: 'nv-row', role: 'listitem', dataset: { n: i.n },
-        onclick: () => (live && live.recovering && i.D != null ? hereSheet(i) : confirmSheet(`Make #${i.n} the next instruction?`, 'Make next', () => act('jump', { n: i.n }))) },
+        onclick: () => (live && live.started && i.D != null ? hereSheet(i) : confirmSheet(`Make #${i.n} the next instruction?`, 'Make next', () => act('jump', { n: i.n }))) },
         h('span', { class: 'nv-n' }, i.n),
         h('span', { class: 'nv-om' }, fmtOm(i.om)),
         h('span', { class: 'nv-ico' }, actionIcon(i)),
