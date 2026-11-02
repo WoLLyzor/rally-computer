@@ -891,7 +891,8 @@ export class LiveLoop {
 
     this.state = {
       t_s: now, d_om: D - base, D, section: next?.section ?? 1, delta_s: delta, perfect_t: perfect,
-      target_mph: this.offRoute ? (back?.mph ?? null) : said.display,   // off the route: the speed back, once planned limit_mph: lim.mph ?? (adv ? null : null), limit_src: lim.src ?? (adv ? 'default' : null), cast_mph: cast,
+      // Off the route, the target is the speed back (once planned).
+      target_mph: this.offRoute ? (back?.mph ?? null) : said.display, limit_mph: lim.mph ?? (adv ? null : null), limit_src: lim.src ?? (adv ? 'default' : null), cast_mph: cast,
       next: next ? { n: next.n, om: next.om, text: next.text, ins: next, to_mi: next.D !== null ? next.D - D : null } : null,
       after: after.map((r) => ({ n: r.n, om: r.om, text: r.text, ins: r })),
       zone: sch.inFreeZone(D) ? 'free' : transitRow ? 'transit' : null,
