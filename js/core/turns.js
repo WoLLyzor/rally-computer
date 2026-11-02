@@ -169,5 +169,14 @@ export class RouteProgress {
     }
     return { next: this.next, alert: this.alert };
   }
+  // The car is on the locked route (by GPS) past these steps: they were done, turns included (auto-advance).
+  passOnRoute(D) {
+    while (this.idx < this.rows.length) {
+      const r = this.rows[this.idx];
+      if (r.D === null || r.D > D - 0.01) break;
+      this.done.add(r.n); this.idx++;
+    }
+    if (this.alert && this.alert.D <= D) this.alert = null;
+  }
   clearAlert() { this.alert = null; }
 }

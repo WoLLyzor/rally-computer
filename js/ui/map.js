@@ -17,6 +17,8 @@ export function loadMap(url = 'map/roads.json') {
     .catch((err) => { LOADING = null; throw err; });
   return LOADING;
 }
+// The offline map and its road graph (null graph if the route guess couldn't load), for the route lock.
+export async function mapGraph() { await loadMap(); return { map: MAP, graph: GRAPH }; }
 
 const WIDTH = [7, 6.5, 6, 5.5, 5, 4, 4, 2.2, 1.6];   // line width by road class: motorway … track
 const INK = { bg: '#0e1217', major: '#8b97a4', road: '#5f6a76', minor: '#434b55', label: '#c9d1d9', onto: '#7cc4ff', track: '#3ddc84', bridge: '#f5b942' };
@@ -39,7 +41,7 @@ export function mountMap(container) {
     road, status, h('div', { class: 'mp-attr' }, '© OpenStreetMap contributors'));
   container.append(root);
   // bias: the crew's zoom on top of the automatic one; rot: the drawn heading, eased toward the car's.
-  let bias = 1, mpp = null, last = null, drawnAt = 0, heading = null, rot = null, proj = null, projAt = 0, headingSavedAt = 0;
+  let bias = 1, mpp = null, last = null, drawnAt = 0, heading = null, rot = null, proj = null, projAt = 0, headingSavedAt = 0, lockXY = null;
   // The driver's view at all times: the last course is kept while stopped, even across a restart of the app.
   try { const hs = localStorage.getItem('rc.mapHeading'); if (hs !== null && Number.isFinite(Number(hs))) heading = Number(hs); } catch { /* no storage */ }
 
@@ -155,7 +157,24 @@ export function mountMap(container) {
     }
     // The route ahead: the app's best guess from the instructions, about once a second, with how sure it
     // is. Dashed under 60%, not drawn under 30%; each turn marker carries the chance the line is right to it.
-    if (GRAPH && projectRoute && live.started && st?.D != null && (force || now - projAt > 1000)) {
+    // The route locked at import: the whole of it in pink (what's behind the car fainter), and off the route the
+    // way back in blue. It replaces the guess below.
+    if (live.lockLL) {
+      if (lockXY?.ll !== live.lockLL) lockXY = { ll: live.lockLL, xy: live.lockLL.map(([la, lo]) => MAP.toLocal(la, lo)) };
+      const cum = live.tracker?.cum, sCar = live.tracker?.s ?? null, xy = lockXY.xy;
+      const line = (from, to) => { ctx.beginPath(); for (let j = from; j <= to; j++) { const [x, y] = xy[j]; if (j === from) ctx.moveTo(sx(x, y), sy(x, y)); else ctx.lineTo(sx(x, y), sy(x, y)); } };
+      let cut = 0;
+      if (sCar !== null && cum) while (cut + 1 < cum.length && cum[cut + 1] <= sCar) cut++;
+      if (cut > 0) { line(0, cut); ctx.strokeStyle = INK.route; ctx.lineWidth = 4 * k + 1; ctx.globalAlpha = 0.35; ctx.stroke(); }
+      line(cut, xy.length - 1); ctx.strokeStyle = INK.route; ctx.lineWidth = 6 * k + 2; ctx.globalAlpha = 0.9; ctx.stroke(); ctx.globalAlpha = 1;
+      const rc = live.recovery;
+      if (live.offRoute && rc?.ll?.length > 1) {
+        ctx.beginPath();
+        rc.ll.forEach(([la, lo], i) => { const [x, y] = MAP.toLocal(la, lo); if (i) ctx.lineTo(sx(x, y), sy(x, y)); else ctx.moveTo(sx(x, y), sy(x, y)); });
+        ctx.strokeStyle = INK.bridge; ctx.lineWidth = 8 * k + 2; ctx.globalAlpha = 0.95; ctx.setLineDash([18, 10]); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;   // amber: not the next turn's blue
+      }
+      guess.hidden = true; proj = null;
+    } else if (GRAPH && projectRoute && live.started && st?.D != null && (force || now - projAt > 1000)) {
       projAt = now;
       try { proj = projectRoute(GRAPH, { x: x0, y: y0, headingDeg: v > 1.5 ? heading : null, D: st.D, rows: live.schedule.rows, maxTurns: 3 }); } catch (e) { proj = null; console.warn('route guess', e); }
     }
@@ -182,7 +201,7 @@ export function mountMap(container) {
         }
       }
     } else guess.hidden = true;
-    if (live.started && GRAPH) { try { checkOffRoute(x0, y0, v, now, st ?? {}, live); } catch (e) { console.warn('off-route check', e); } }
+    if (live.started && GRAPH && !live.lockLL) { try { checkOffRoute(x0, y0, v, now, st ?? {}, live); } catch (e) { console.warn('off-route check', e); } }   // locked: the tracker says
     // The track driven so far (1 s points; the last 2 hours).
     const tr = live.track || [];
     if (tr.length > 1) {

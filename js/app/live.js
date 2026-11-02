@@ -9,6 +9,8 @@ import { targetSpeed, capFor, SpeedAnnouncer, LimitTracker } from '../core/speed
 import { buildDelays, plannedOffsetFn, slowdownLossS } from '../core/plan.js';
 import { fmtTod, zoneEdge, parseTod } from '../core/instruction.js';
 import { zoneKinds } from '../core/zones.js';
+import { RouteTracker } from '../core/tracker.js';
+import { speedBack } from '../core/recover.js';
 import { instructionPhrase, spokenDistance } from './voice.js';
 
 const wrap180 = (d) => ((d + 540) % 360) - 180;
@@ -106,6 +108,55 @@ export class LiveLoop {
     this.offsetFn = plannedOffsetFn(this.delays, { alpha: st.alpha, castAt, capAt });
   }
 
+  // The route locked on the map at import (main.js lockRouteNow): the car is then followed along it by GPS
+  // (core/tracker.js). On the route, its official mileage at the car corrects the odometer's; off it, the miles
+  // driven don't count and "Get me back on course" (main.js planBack) sets this.recovery.
+  setLock(lock) {
+    this.tracker = lock && !lock.error && lock.path?.ll?.length > 1 && lock.rows?.length ? new RouteTracker(lock) : null;
+    this.lockLL = this.tracker ? lock.path.ll : null;
+    this.offRoute = null; this.trackOff = null; this.recovery = null; this.lastTrackT = null; this.lockLost = false;
+  }
+  trackFix(t, lat, lon, speed, heading) {
+    const tr = this.tracker, e = this.engine;
+    if (!tr || !this.started || (this.lastTrackT != null && t >= this.lastTrackT && t - this.lastTrackT < 0.25)) return;
+    this.lastTrackT = t;
+    const r = tr.update({ t, lat, lon, speed, heading }, tr.sOf(e.D));
+    if (r.left && !this.lockLost) {
+      const D = tr.D(tr.leftAt), n = this.schedule.rows.filter((x) => x.D !== null && x.D <= D + 1e-6).at(-1)?.n ?? null;
+      this.offRoute = { D, n, s: tr.leftAt, since: this.clock.nowTod(), sEngine: e.s }; this.recovery = null;
+      this.addLog(`Off the route${n != null ? ` after #${n}` : ''} (${D.toFixed(2)} mi): miles off it don't count. GET ME BACK shows the way`, { claim: true });
+      this.voice?.speak('Off the route. Get me back shows the way.', { key: `offroute:${Math.round(D * 100)}`, alert: true });
+      return;
+    }
+    if (this.lockLost && !r.on) return;
+    if (!r.on || r.s === null) return;
+    const Dm = tr.D(r.s);
+    if (this.lockLost) {   // back on the route on the map after following the odometer: locked again
+      this.lockLost = false;
+      const jump = e.reanchor(Dm, e.s, 'on the mapped route again');
+      this.addLog(`On the mapped route again at ${Dm.toFixed(2)} mi (${jump >= 0 ? '+' : ''}${jump.toFixed(2)} mi)`, { claim: true });
+      this.trackOff = null;
+      return;
+    }
+    if (this.offRoute) {   // back on the route: the official mileage where it joined
+      this.offRoute = null; this.recovery = null; this.trackOff = null;
+      const jump = e.reanchor(Dm, e.s, 'back on the route');
+      this.addLog(`Back on the route at ${Dm.toFixed(2)} mi (${jump >= 0 ? '+' : ''}${jump.toFixed(2)} mi)`, { claim: true });
+      this.voice?.speak('Back on the route.', { key: `onroute:${Math.round(Dm * 100)}`, alert: true });
+      return;
+    }
+    if (!(r.d <= 25)) return;
+    // On the route: smoothed over about a second, so GPS noise doesn't jiggle it; set when it's 10 m out.
+    const off = Dm - e.D;
+    this.trackOff = this.trackOff == null ? off : this.trackOff + (off - this.trackOff) * 0.3;
+    if (Math.abs(this.trackOff) > 0.006) {
+      const jump = e.reanchor(e.D + this.trackOff, e.s, 'GPS on the locked route');
+      this.trackOff = null; this.recover = null;
+      if (Math.abs(jump) > 0.05) this.addLog(`Distance set by GPS on the route: ${jump >= 0 ? '+' : ''}${jump.toFixed(2)} mi`);
+      this.lastResync = `route GPS ${jump >= 0 ? '+' : ''}${jump.toFixed(3)} mi`;
+    }
+  }
+
   // ---- sensors ----
   ingest(sm) {
     if (sm.src === 'racebox') {
@@ -129,10 +180,13 @@ export class LiveLoop {
       }
       if (sm.headingValid && sm.speed_mps > 3) this.pushHeading(sm.t, sm.heading_deg);
       if (yaw !== null) { const ev = this.turns.push(sm.t, yaw, this.engine.s); if (ev) this.onTurn(ev); }
-      if (sm.fixOk) { this.onFix(sm.lat, sm.lon, sm.t); this.trackPoint(sm.t, sm.utc_ms, sm.lat, sm.lon, sm.speed_mps); }
+      if (sm.fixOk) { this.onFix(sm.lat, sm.lon, sm.t); this.trackPoint(sm.t, sm.utc_ms, sm.lat, sm.lon, sm.speed_mps); this.trackFix(sm.t, sm.lat, sm.lon, sm.speed_mps, sm.headingValid ? sm.heading_deg : null); }
     } else if (sm.src === 'gps') {
       this.engine.ingest(sm);
-      if (sm.acc_m < 30) { this.onFix(sm.lat, sm.lon, sm.t); if (!(sm.t - this.engine.last.racebox < 2)) this.trackPoint(sm.t, sm.wallMs, sm.lat, sm.lon, sm.speed_mps); }
+      if (sm.acc_m < 30) {
+        this.onFix(sm.lat, sm.lon, sm.t);
+        if (!(sm.t - this.engine.last.racebox < 2)) { this.trackPoint(sm.t, sm.wallMs, sm.lat, sm.lon, sm.speed_mps); this.trackFix(sm.t, sm.lat, sm.lon, sm.speed_mps ?? 0, sm.heading_deg ?? null); }
+      }
       const rbLive = sm.t - this.engine.last.racebox < 2;
       if (!rbLive && sm.heading_deg !== null && sm.speed_mps > 3) {
         const prev = this.headings[this.headings.length - 1];
@@ -651,6 +705,17 @@ export class LiveLoop {
     const lastSample = Math.max(e.last.racebox, e.last.obd, e.last.gps);
     if (e.t !== null && tn - e.t > 0.3 && tn - lastSample < 5) e.predict(tn);
     const now = this.clock.nowTod();
+    // Off the locked route: the distance stays where the car left it (the detour's miles don't count).
+    if (this.offRoute && e.s - this.offRoute.sEngine > 2000) {
+      // 2 km off the route on the map: more likely the map's route is wrong here than the crew. Back to the odometer,
+      // the miles driven since added back; locked again when the car is on the mapped route.
+      const miles = (e.s - this.offRoute.sEngine) / 1609.344 * (e.K || 1);
+      e.reanchor(this.offRoute.D + miles, e.s, 'map route lost');
+      this.addLog(`2 km off the route on the map: it may be wrong here. Following the odometer from ${(this.offRoute.D + miles).toFixed(2)} mi`, { claim: true });
+      this.voice?.speak('The map route may be wrong here. Following the odometer.', { key: `lost:${Math.round(this.offRoute.D * 100)}`, alert: true });
+      this.offRoute = null; this.recovery = null; this.lockLost = true;
+    }
+    if (this.offRoute && Math.abs(e.D - this.offRoute.D) > 0.0005) e.reanchor(this.offRoute.D, e.s, 'off the route');
     const D = e.D;
     if (this.progress) this.progress.calibrated = e.calibrated;
     // A restart with no printed time (on any minute you choose, or flying) is counted as the car crosses its
@@ -720,8 +785,12 @@ export class LiveLoop {
         }
       }
     } else if (this.heldAt != null && lr?.n !== this.heldAt) this.heldAt = null;
+    // On the locked route by GPS: every step the car is past is done (auto-advance, no taps).
+    if (this.started && this.tracker?.on && !this.offRoute && this.tracker.dist !== null && this.tracker.dist <= 25) this.progress.passOnRoute(D);
     const pr = this.started ? this.progress.update(D) : { next: sch.rows[0] ?? null, alert: null };
     if (this.recover && pr.alert) { this.progress.clearAlert(); pr.alert = null; }   // the distance itself is in doubt
+    // On the locked route by GPS: a turn the gyro didn't see was made all the same (the car is on the route past it).
+    if (pr.alert && this.tracker?.on && this.tracker.dist !== null && this.tracker.dist <= 25) { this.progress.clearAlert(); pr.alert = null; }
     // No wrong-turn calls in a transit: only the timed zones count, and a stop off the route there is fine.
     if (pr.alert && sch.inTransit(D)) { this.progress.clearAlert(); pr.alert = null; }
     // A turn the gyro missed (a gap in its data, an odd junction): the GPS course across the point
@@ -786,7 +855,8 @@ export class LiveLoop {
     const base = next ? (sch.bases[next.section] ?? 0) : 0;
     let alert = null;
     if (pr.alert) alert = { kind: 'missed_turn', n: pr.alert.n, back_mi: D - pr.alert.D, text: `Missed turn? Check #${pr.alert.n} at ${fmtOm(pr.alert.D - (sch.bases[sch.rows.find((r) => r.n === pr.alert.n)?.section] ?? 0))}` };
-    if (this.offStart) alert = { kind: 'offcourse', text: `Off course since ${fmtOm(this.offStart.D - base)} · ${((e.s - this.offStart.s) / 1609.344).toFixed(2)} mi` };
+    if (this.offRoute) alert = { kind: 'offroute', n: this.offRoute.n, text: `Off the route${this.offRoute.n != null ? ` after #${this.offRoute.n}` : ''}: GET ME BACK shows the way` };
+    else if (this.offStart) alert = { kind: 'offcourse', text: `Off course since ${fmtOm(this.offStart.D - base)} · ${((e.s - this.offStart.s) / 1609.344).toFixed(2)} mi` };
     else if (this.recover) alert = { kind: 'recovering', text: `Paused ${this.recover.gapS} s: distance may be up to ${this.recover.eHi.toFixed(2)} mi short. Tap the instruction you're at (or wait for the next turn).` };
     if (this.calWarn && tn < this.calWarn.until) alert = alert ?? { kind: 'calibration', text: `Odometer factor ${this.calWarn.K.toFixed(3)} looks wrong (${((this.calWarn.K - 1) * 100).toFixed(1)}% off). Tapped End odo check at the wrong place? Then Undo last.` };
     if (e.health.racebox === 'lost' && e.health.gps !== 'ok' && this.started) alert = alert ?? { kind: 'gps_lost', text: 'No GPS: distance is estimated' };
@@ -809,12 +879,19 @@ export class LiveLoop {
         }
       }
     }
+    // The way back (set by main.js planBack): metres left of it, and the speed that gets to the rejoin point on time.
+    let back = null;
+    if (this.offRoute && this.recovery && !this.recovery.error) {
+      const rc = this.recovery, left = Math.max(0, rc.len_m - (e.s - rc.sAt)), T = sch.perfectTimeAt(rc.rejoinD);
+      const mph = T === null ? null : speedBack(left, T - now);
+      back = { n: rc.rejoinN, left_m: left, mph: mph === null ? null : Math.min(mph, capFor({ castMph: cast, limitMph: null, defaultLimit: st.defaultLimit })), late: T !== null && T <= now };
+    }
     this.cues({ D, next, delta, speak: said.speak, display: said.display, cap: adv?.cap ?? null, alert, hold, waiting });
     const zh = this.started ? this.zoneBeep(D) : null;   // what a Richta beep here would do (shown on its button)
 
     this.state = {
       t_s: now, d_om: D - base, D, section: next?.section ?? 1, delta_s: delta, perfect_t: perfect,
-      target_mph: said.display, limit_mph: lim.mph ?? (adv ? null : null), limit_src: lim.src ?? (adv ? 'default' : null), cast_mph: cast,
+      target_mph: this.offRoute ? (back?.mph ?? null) : said.display,   // off the route: the speed back, once planned limit_mph: lim.mph ?? (adv ? null : null), limit_src: lim.src ?? (adv ? 'default' : null), cast_mph: cast,
       next: next ? { n: next.n, om: next.om, text: next.text, ins: next, to_mi: next.D !== null ? next.D - D : null } : null,
       after: after.map((r) => ({ n: r.n, om: r.om, text: r.text, ins: r })),
       zone: sch.inFreeZone(D) ? 'free' : transitRow ? 'transit' : null,
@@ -822,7 +899,7 @@ export class LiveLoop {
       alert, hold, waiting, ta_suggest: ta && ta.taS > 0 ? ta : null,
       health: { ...e.health, k: e.K, last_resync: this.lastResync ?? '' },
       speed_mph: e.v / 0.44704, stopped: e.v < 0.3, unit: st.timingUnit, started: this.started, calibrated: e.calibrated,
-      recovering: !!this.recover, richta_zone: zh ? { n: zh.row.n, start: zh.start, mi: zh.row.D - D } : null, avg_mph: avg, should_mph: should, transit_end_n: transitRow?.n ?? null, ta_leg_s: taLeg, ta_max_s: st.taMax_s ?? 1170, leg_style: st.legStyle ?? 'restart',
+      recovering: !!this.recover, richta_zone: zh ? { n: zh.row.n, start: zh.start, mi: zh.row.D - D } : null, off_route: this.offRoute ? { n: this.offRoute.n, D: this.offRoute.D } : null, back, on_route: this.tracker ? this.tracker.on : null, avg_mph: avg, should_mph: should, transit_end_n: transitRow?.n ?? null, ta_leg_s: taLeg, ta_max_s: st.taMax_s ?? 1170, leg_style: st.legStyle ?? 'restart',
       map_hint: this.started && !sch.inTransit(D) ? this.mapHint ?? null : null,   // set by the map: the car left a confident route guess
     };
     // The journal: what the crew was shown (an alert), and the state every 10 s with where the car was.

@@ -5,7 +5,7 @@ import { mountVerify } from './ui/verify.js';
 import { mountSettings } from './ui/settings.js';
 import { mountDriver } from './ui/driver.js';
 import { mountNavigator } from './ui/navigator.js';
-import { mountMap } from './ui/map.js';
+import { mountMap, mapGraph } from './ui/map.js';
 import { parseText, reparse } from './core/parser.js';
 import { runChecks, computeLegs, assignSections, normalizeInstruction, fmtTod, zoneEdge } from './core/instruction.js';
 import { extractPages, buildDigest } from './core/extract.js';
@@ -13,7 +13,7 @@ import { store, loadSettings, saveSettings } from './app/store.js';
 import { RallyClock } from './app/clock.js';
 import { Voice } from './app/voice.js';
 import { LiveLoop } from './app/live.js';
-import { segmentTable } from './core/timing.js';
+import { segmentTable, buildSchedule } from './core/timing.js';
 import { renderTimes } from './ui/times.js';
 import { prepareImage } from './app/image.js';
 import { RaceBox } from './sensors/racebox.js';
@@ -94,12 +94,56 @@ function checksFor(ins) {
 function setRoute(instructions, extra = {}) {
   const ins = instructions.map(normalizeInstruction);
   if (!ins.some((r) => r.section > 1)) assignSections(ins);
-  S.route = { ...(S.route || {}), ...extra, instructions: ins, savedAt: Date.now() };
+  S.route = { ...(S.route || {}), ...extra, instructions: ins, savedAt: Date.now(), lock: null };
   store.set('route', S.route);
+  scheduleLock();
   if (live) {
     live.setRoute(ins, { keepPlace: !extra.source });   // a fix to one line mid-rally keeps the place
     if (live.started) saveLive();
   }
+}
+
+// The route locked on the road map (core/routelock.js), worked out again whenever the instructions change: every
+// step's place (GPS), and the turns the map doesn't settle, for the crew to check. at: a GPS fix to start from
+// when the first line's words don't name the start.
+let lockTimer = null;
+function scheduleLock(at = null) { clearTimeout(lockTimer); lockTimer = setTimeout(() => lockRouteNow(at).catch((e) => console.warn('route lock', e)), 400); }
+async function lockRouteNow(at = null) {
+  const ins = S.route?.instructions, savedAt = S.route?.savedAt;
+  if (!ins?.length) return;
+  const { map, graph } = await mapGraph();
+  if (!graph) return;
+  const { findStart, startsAt, lockRoute, serializeLock } = await import('./core/routelock.js');
+  const rows = buildSchedule(ins, { startTod: 0 }).rows;
+  const fix = at ?? live?.lastFix ?? null, near = fix && map.inside(fix.lat, fix.lon) ? map.toLocal(fix.lat, fix.lon) : null;
+  const nearXY = near ? { x: near[0], y: near[1] } : null;
+  const st = findStart(graph, rows[0]?.text, nearXY) ?? findStart(graph, rows[1]?.text, nearXY);
+  const starts = st ? [st] : nearXY ? startsAt(graph, nearXY.x, nearXY.y, fix.heading ?? null) : [];
+  const lock = starts.length ? lockRoute(graph, rows, starts) : null;
+  if (S.route?.savedAt !== savedAt) return;   // changed meanwhile: a newer lock is coming
+  S.route.lock = lock ? serializeLock(lock, rows, map) : { v: 1, at: Date.now(), error: starts.length ? 'none' : 'start' };
+  store.set('route', S.route);
+  live?.jot('lock', { ok: !!lock, flagged: S.route.lock.flagged?.length ?? null, error: S.route.lock.error ?? null });
+  live?.setLock(S.route.lock);
+  S.view?.lockInfo?.(S.route.lock);
+}
+// GET ME BACK ON COURSE: the shortest roads from the car back to where it left the locked route (core/recover.js);
+// the live loop turns it into the speed that gets there on time. Planned again every 15 s while off the route.
+async function planBack() {
+  const off = live?.offRoute, fix = live?.lastFix, lk = S.route?.lock;
+  if (!off || !fix || !lk?.path) return;
+  const { map, graph } = await mapGraph();
+  if (!graph || !map.inside(fix.lat, fix.lon)) { live.recovery = { error: 'map', at: Date.now() }; return; }
+  const { routeBack } = await import('./core/recover.js');
+  const { ll, cum } = lk.path;
+  let k = 0;
+  while (k + 2 < cum.length && cum[k + 1] < off.s) k++;
+  const f = Math.max(0, Math.min(1, (off.s - cum[k]) / (cum[k + 1] - cum[k] || 1)));
+  const [tx, ty] = map.toLocal(ll[k][0] + (ll[k + 1][0] - ll[k][0]) * f, ll[k][1] + (ll[k + 1][1] - ll[k][1]) * f), [fx, fy] = map.toLocal(fix.lat, fix.lon);
+  const r = routeBack(graph, { x: fx, y: fy }, { x: tx, y: ty });
+  if (live.offRoute !== off) return;   // back on (or off again) meanwhile
+  live.recovery = r ? { len_m: r.len, ll: r.pts.map(([x, y]) => map.toLatLon(x, y)), rejoinD: off.D, rejoinN: off.n, sAt: live.engine.s, at: Date.now() } : { error: 'none', at: Date.now() };
+  live.jot('back', { len_m: r ? Math.round(r.len) : null, to: off.n });
 }
 const verifiedCount = () => (S.route?.instructions || []).filter((r) => r.verified).length;
 
@@ -117,6 +161,7 @@ function ensureLive() {
     if (j && j.routeSavedAt === S.route?.savedAt) { live.journal = [...(j.journal || []), ...live.journal]; live.log = [...(j.log || []), ...live.log]; live.cpErrors = j.cpErrors || []; }
   }
   voice.onSay = (text) => live?.jot('say', { text });
+  live.setLock(S.route?.lock ?? null);
   appVersion().then((v) => live.jot('open', { v, restored, gap_s: restored ? Math.round((Date.now() - snap.wallMs) / 1000) : null, screen: location.hash || '#home' }));
   return live;
 }
@@ -240,6 +285,21 @@ function showScan() {
 
 function showVerify() {
   app.append(topbar('Driver verifies'));
+  const lockBox = h('div', { class: 'panel lockinfo' }); app.append(lockBox);
+  const renderLock = (lk) => {
+    clear(lockBox);
+    if (!lk) { lockBox.append(h('b', {}, 'Route on the map: '), 'working it out…'); return; }
+    if (lk.error === 'start') {
+      lockBox.append(h('b', {}, 'Route on the map: '), 'the first line doesn’t say where the route starts in a way the map can find. At the start, tap ',
+        h('button', { onclick: () => { live?.jot('ui', { what: 'button', label: 'Lock here' }); lockRouteNow(live?.lastFix ?? null); } }, 'Lock route here'), ' (uses this tablet’s GPS position).');
+      return;
+    }
+    if (lk.error) { lockBox.append(h('b', {}, 'Route on the map: '), 'it couldn’t be followed from the start. Check the first lines.'); return; }
+    const flagged = lk.flagged || [];
+    lockBox.append(h('b', {}, 'Route on the map: '), `every step placed (${lk.rows.length}), turns ${lk.rows.filter((r) => r.turn).length}. `,
+      flagged.length ? h('span', { class: 'flag watch' }, `Check ${flagged.length}: ${flagged.map((f) => `#${f.n} (${f.why})`).join('; ')}`) : h('span', {}, 'Every turn fits its mileage, direction and road name.'));
+  };
+  renderLock(S.route?.lock ?? null);
   const box = h('div', {}); app.append(box);
   const ins = S.route?.instructions || [];
   S.view = mountVerify(box, {
@@ -257,6 +317,8 @@ function showVerify() {
     },
     onDone: () => { location.hash = '#home'; },
   });
+  S.view.lockInfo = renderLock;
+  if (!S.route?.lock && S.route?.instructions?.length) scheduleLock();
 }
 
 function showSettings() {
@@ -312,6 +374,11 @@ function showDrive() {
     sb.ico.textContent = ins ? actionIcon(ins) : '';
     sb.what.textContent = ins ? actionSummary(ins) : nx?.text ?? 'No more instructions';
     sb.dist.textContent = nx?.to_mi != null ? `${fmtOm(Math.max(0, nx.to_mi))} mi` : '';
+    // Off the route: the way back instead of the next step.
+    if (st.off_route) {
+      sb.what.textContent = `OFF THE ROUTE · back to ${st.off_route.n != null ? `#${st.off_route.n}` : 'where you left it'}${st.back?.mph ? ` · drive ${Math.round(st.back.mph)} mph` : st.back?.late ? ' · late: drive the CAST, safely' : ''}`;
+      sb.dist.textContent = st.back ? `${fmtOm(st.back.left_m / 1609.344)} mi` : '';
+    }
   }
   grid.append(stepBar, dEl, nEl); app.append(grid);
   // Resizable layout: CSS variables on .drive (defaults = the old fixed layout), saved as store 'layout'.
@@ -347,6 +414,7 @@ function showDrive() {
     mode: simple ? 'simple' : 'full', startTod: clockStart(), moreItems, layout,
     onUi: (what, d) => live.jot('ui', { what, ...d }),
     onAction: (name, p) => {
+      if (name === 'back') { live.jot('act', { a: 'back', via: 'ui', s: live.brief(), r: [] }); planBack(); return; }
       const n0 = live.log.length;
       live.userAction(name, p);
       nav.setRoute(live.schedule.rows, live.schedule.table(), digest);
@@ -380,6 +448,7 @@ function showDrive() {
   S.timer = setInterval(() => {
     const st = live.tick();
     driver.update(st); nav.update(st); updateStepBar(st);
+    if (st.off_route && (!live.recovery || Date.now() - live.recovery.at > 15000)) { live.recovery = { ...(live.recovery || {}), at: Date.now() }; planBack(); }
     if (map && S.mapOn) map.update(st, live);
     if (++k % 10 === 0) {
       saveLive();

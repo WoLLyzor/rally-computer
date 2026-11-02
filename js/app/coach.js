@@ -58,6 +58,12 @@ export function coach(st, ctx = {}) {
     return { title: 'Off the route?', tone: 'watch', act: 'back',
       text: `The map’s route guess (${mh.pct}% sure) goes along ${mh.routeRoad || 'another road'}${mh.road ? `; you’re on ${mh.road}` : ''}. Check the last instruction. If you turned wrong: turn around when safe, go back to ${mh.routeRoad || 'the pink line'}, and tap BACK ON ROUTE there.` };
   }
+  if (a?.kind === 'offroute') {
+    const bk = st.back, to = st.off_route?.n != null ? `#${st.off_route.n}` : 'where you left the route';
+    const how = bk ? `${(bk.left_m / 1609.344).toFixed(1)} mi back to ${to} (the blue line on the map). ${bk.mph ? `Drive ${Math.round(bk.mph)} mph to be there on time.` : 'You’re late already: drive the CAST, safely.'}`
+      : 'Tap GET ME BACK for the way back and the speed.';
+    return { title: 'Off the route', tone: 'watch', act: 'back', text: `${how} The app picks up again as you rejoin the route.` };
+  }
   if (a?.kind === 'offcourse') return { title: 'Off course', tone: 'watch', act: 'back', text: 'Go back the way you came (the green line on the map) to where you left the route. Tap BACK ON ROUTE when you’re there.' };
   if (a?.kind === 'recovering') return { title: 'The app was paused', tone: 'watch', act: null, text: 'It fixes the distance by itself at the next turn. To fix it now: tap the line you’re passing in the list, then WE’RE HERE.' };
   if (a?.kind === 'calibration') return { title: 'Odometer check looks wrong', tone: 'watch', act: null, text: 'If its end was set at the wrong place, tap UNDO.' };

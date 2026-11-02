@@ -212,6 +212,7 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
   const simpleBox = h('div', { class: 'nv-simple' }, E.richtaBtn, h('div', { class: 'nv-srow' }, E.delayBtn, E.ctxBtn), h('div', { class: 'nv-srow' }, E.undoBtn, E.moreBtn));
   function ctxRun() {
     if (!live || !live.started) act('start');
+    else if (live.off_route) act('back');
     else if (live.alert && live.alert.kind === 'missed_turn') act('here', { n: live.alert.n });
     else if (live.alert && live.alert.kind === 'offcourse') { off = false; syncOff(); act('offcourse', { on: false }); }
     else if (live.map_hint && live.map_hint.kind === 'offroute') act('rejoin', {});
@@ -336,7 +337,7 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
     }
     if (E.coachText.textContent !== c.text) E.coachText.textContent = c.text;
     E.coach.className = `nv-coach nv-tone-${c.tone}`;
-    const ctx = !l.started ? ['START', 'as you leave the start line'] : (l.alert && (l.alert.kind === 'missed_turn' || l.alert.kind === 'offcourse')) || (l.map_hint && l.map_hint.kind === 'offroute') ? ['BACK ON ROUTE', 'tap as you rejoin the route'] : null;
+    const ctx = !l.started ? ['START', 'as you leave the start line'] : l.off_route ? ['GET ME BACK', 'on course: the way and the speed'] : (l.alert && (l.alert.kind === 'missed_turn' || l.alert.kind === 'offcourse')) || (l.map_hint && l.map_hint.kind === 'offroute') ? ['BACK ON ROUTE', 'tap as you rejoin the route'] : null;
     E.ctxBtn.style.visibility = ctx ? '' : 'hidden';
     if (ctx && E.ctxBtn.firstChild.textContent !== ctx[0]) { E.ctxBtn.firstChild.textContent = ctx[0]; E.ctxBtn.lastChild.textContent = ctx[1]; }
     E.richtaBtn.classList.toggle('nv-hint', c.act === 'richta');
