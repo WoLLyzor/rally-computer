@@ -1,7 +1,7 @@
 // The navigator's coach: what to do right now, in plain words, from the live state. A headline (what to
 // tell the driver, or what to tap) and one line of speed and time advice.
 // coach(state, { rows, startTod }) -> { title, text, tone: 'info' | 'watch' | 'good', act }
-// act: the button that matters now ('start', 'richta', 'mark', 'back') so the screen can point at it.
+// act: the button that matters now ('start', 'richta', 'back') so the screen can point at it.
 import { explain } from '../core/explain.js';
 import { fmtTod } from '../core/instruction.js';
 
@@ -60,7 +60,7 @@ export function coach(st, ctx = {}) {
   }
   if (a?.kind === 'offcourse') return { title: 'Off course', tone: 'watch', act: 'back', text: 'Go back the way you came (the green line on the map) to where you left the route. Tap BACK ON ROUTE when you’re there.' };
   if (a?.kind === 'recovering') return { title: 'The app was paused', tone: 'watch', act: null, text: 'It fixes the distance by itself at the next turn. To fix it now: tap the line you’re passing in the list, then WE’RE HERE.' };
-  if (a?.kind === 'calibration') return { title: 'Odometer check looks wrong', tone: 'watch', act: null, text: 'If MARK was tapped at the wrong place, tap UNDO.' };
+  if (a?.kind === 'calibration') return { title: 'Odometer check looks wrong', tone: 'watch', act: null, text: 'If its end was set at the wrong place, tap UNDO.' };
   if (a?.kind === 'gps_lost') return { title: 'No GPS signal', tone: 'watch', act: null, text: 'Distance is being estimated. Check that the RaceBox is on and connected (top bar: Connect RaceBox).' };
 
   if (st.hold) {
@@ -84,10 +84,10 @@ export function coach(st, ctx = {}) {
   if (!nx || !ins) return { title: 'No more instructions', text: 'After the finish: Home, then Log, then Save file.', tone: 'good', act: null };
   const pace = paceLine(st, { turnSoon: ins.action === 'turn' && nx.to_mi != null && nx.to_mi < 0.12 });
   if (!st.calibrated && ins.odo_check_end) {
-    return { title: `Odometer check ends ${nx.to_mi != null ? `in ${distWords(Math.max(0, nx.to_mi))}` : 'ahead'}`, tone: 'watch', act: 'mark',
-      text: `Tap MARK exactly as the front wheels reach it: ${say(ins)}. ${pace}`.trim() };
+    return { title: `Odometer check ends ${nx.to_mi != null ? `in ${distWords(Math.max(0, nx.to_mi))}` : 'ahead'}`, tone: 'watch', act: null,
+      text: `As the front wheels reach it, tap its line in the list, then “At #${nx.n} now”: ${say(ins)}. ${pace}`.trim() };
   }
-  if (nx.to_mi == null || ins.D == null) return { title: `Watch for: ${say(ins)}`, text: `Tap MARK as you pass it. ${pace}`.trim(), tone: 'watch', act: 'mark' };
+  if (nx.to_mi == null || ins.D == null) return { title: `Watch for: ${say(ins)}`, text: `As you pass it, tap its line in the list, then “At #${nx.n} now”. ${pace}`.trim(), tone: 'watch', act: null };
   const nxt = st.after?.[0]?.ins;
   const then = nxt && nxt.D != null && nxt.D - ins.D <= 0.2 ? ` Then right after: ${say(nxt)}.` : '';
   const late = st.delta_s != null && st.delta_s >= 20 && st.ta_suggest ? ' Held up by a train or traffic? Tap DELAY.' : '';

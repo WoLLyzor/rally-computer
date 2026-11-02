@@ -6,7 +6,7 @@ export const GLOSSARY = [
   ['Perfect time, early, late:', 'the perfect time is when a car driving exactly at the CAST would get there. You’re early or late by the difference.'],
   ['Segment (leg):', 'one timed stretch, from a restart to its last checkpoint. Here each segment starts fresh.'],
   ['Restart:', 'where timing starts again: at a printed time, or “at the top of any minute” (leave as the clock shows :00, any minute you like).'],
-  ['Odometer check:', 'the first stretch, with official miles. The app compares them with its GPS miles there, so its mileage matches the official one all day. MARK exactly at its end.'],
+  ['Odometer check:', 'the first stretch, with official miles. The app compares them with its GPS miles there, so its mileage matches the official one all day. At its end, tap its line, then “At … now”.'],
   ['Mileage:', 'the official miles printed on each line, e.g. 4.35. “3.14/0.00” means the mileage starts again from 0.00 there.'],
   ['TA (time allowance):', 'time you add in Richta after a hold-up you couldn’t help (train, tractor, school bus). In the app: DELAY.'],
   ['Pause:', 'a printed wait, e.g. “PAUSE 0.30 at STOP”: stop there and wait it out; the app counts it down and says GO.'],

@@ -61,7 +61,7 @@ export class LiveLoop {
   brief() {
     const s = this.state, r1 = (x, k = 1) => (x == null || !Number.isFinite(x) ? null : Math.round(x * 10 ** k) / 10 ** k);
     if (!s) return {};
-    return { D: r1(s.D, 3), om: r1(s.d_om, 2), nx: s.next?.n ?? null, v: r1(s.speed_mph), c: s.cast_mph ?? null, tg: r1(s.target_mph, 0), av: r1(s.avg_mph),
+    return { D: r1(s.D, 3), om: r1(s.d_om, 2), nx: s.next?.n ?? null, v: r1(s.speed_mph), c: s.cast_mph ?? null, tg: r1(s.target_mph, 0), av: r1(s.avg_mph), sh: r1(s.should_mph),
       d: r1(s.delta_s), z: s.zone === 'transit' ? 'T' : s.waiting ? 'W' : s.cast_mph ? 'Z' : '-', rz: s.richta_zone ? `${s.richta_zone.start ? '+' : '-'}${s.richta_zone.n}` : null, rec: s.recovering ? 1 : 0 };
   }
   // A crew action (a tap, or a beep the microphone heard): journaled with the state before it and what the app made of it.
@@ -399,10 +399,35 @@ export class LiveLoop {
         this.addLog(`CAST ${p.mph} from #${n}${was ? ` (was ${was})` : ''}`, { claim: true });
         break;
       }
-      case 'here': {   // the navigator says the car is at instruction #n now (after a pause)
+      case 'heading': {
+        // "Heading to #n": the car is on its way to #n, past #n−1. A distance outside that stretch (behind #n−1, or
+        // at or past #n) goes to #n−1's mileage; inside it, it stays.
+        const rows = this.schedule.rows, i = rows.findIndex((r) => r.n === p.n), row = rows[i];
+        const before = rows.slice(0, Math.max(0, i)).reverse().find((r) => r.D !== null);
+        if (this.started && row && before && (e.D < before.D - 0.005 || (row.D !== null && e.D >= row.D - 0.01))) {
+          this.undo.push({ kind: 'here', theta: [...e.theta], Ptheta: e.Ptheta.map((x) => [...x]), idx: this.progress.idx, done: [...this.progress.done], recover: this.recover ?? null, ev: this.evSnap() });
+          const jump = e.reanchor(before.D, sNow, `#${before.n} (heading to #${p.n})`);
+          this.dropAhead(before.D);
+          this.recover = null; this.offStart = null; this.progress.clearAlert();
+          this.addLog(`Heading to #${p.n}: distance set to #${before.n}'s (${jump >= 0 ? '+' : ''}${jump.toFixed(2)} mi)`);
+        } else this.addLog(`Heading to #${p.n}`);
+        this.progress.jump(p.n);
+        break;
+      }
+      case 'here': {   // the navigator says the car is at instruction #n now (at its point)
         const rows = this.schedule.rows, i = rows.findIndex((r) => r.n === p.n), row = rows[i];
         if (!this.started) break;
-        if (!row || row.D === null) { this.addLog(`#${p.n} has no mileage: MARK it when you reach it`); break; }
+        if (!row) break;
+        // A line with no mileage (a sign to watch for): its place is here.
+        if (row.D === null) {
+          this.undo.push({ kind: 'mark', n: row.n });
+          this.ev.marks[row.n] = e.Dof(sNow); this.rebuild();
+          this.progress.jump(rows[i + 1]?.n ?? row.n); this.progress.done.add(row.n);
+          this.addLog(`At #${row.n} (navigator): placed at ${e.Dof(sNow).toFixed(3)}`);
+          break;
+        }
+        // The end of the odometer check, not yet measured: this sets the odometer factor (what MARK did).
+        if (row.odo_check_end && !e.calibrated) { this.calibrateAt(row, this.odoEndS(row, sNow)); break; }
         this.undo.push({ kind: 'here', theta: [...e.theta], Ptheta: e.Ptheta.map((x) => [...x]), idx: this.progress.idx, done: [...this.progress.done], recover: this.recover ?? null, ev: this.evSnap() });
         const jump = e.reanchor(row.D, sNow, `#${row.n} navigator`);
         this.dropAhead(row.D);
@@ -733,6 +758,9 @@ export class LiveLoop {
     const rb = sch.breakpoints.filter((b) => b.kind === 'restart' && b.T !== null && b.D <= D + 1e-9).at(-1);
     const ref = rb ? { D: rb.D, t: rb.T } : this.startTod != null ? { D: 0, t: this.startTod } : null;
     const avg = this.started && ref && now - ref.t > 5 && !sch.inTransit(D) ? Math.max(0, D - ref.D) * 3600 / (now - ref.t) : null;
+    // What that average should be: the same miles in the perfect time (every CAST and pause since the start counted).
+    const pt = avg !== null ? sch.perfectTimeAt(D) : null;
+    const should = pt !== null && pt - ref.t > 5 ? Math.max(0, D - ref.D) * 3600 / (pt - ref.t) : null;
     const offset = this.started ? this.offsetFn(D) : 0;
     // Between a segment's last control and its restart: no time or speed calls, just the way to the restart
     // (with a countdown when the restart time is printed).
@@ -791,7 +819,7 @@ export class LiveLoop {
       alert, hold, waiting, ta_suggest: ta && ta.taS > 0 ? ta : null,
       health: { ...e.health, k: e.K, last_resync: this.lastResync ?? '' },
       speed_mph: e.v / 0.44704, stopped: e.v < 0.3, unit: st.timingUnit, started: this.started, calibrated: e.calibrated,
-      recovering: !!this.recover, richta_zone: zh ? { n: zh.row.n, start: zh.start, mi: zh.row.D - D } : null, avg_mph: avg, transit_end_n: transitRow?.n ?? null, ta_leg_s: taLeg, ta_max_s: st.taMax_s ?? 1170, leg_style: st.legStyle ?? 'restart',
+      recovering: !!this.recover, richta_zone: zh ? { n: zh.row.n, start: zh.start, mi: zh.row.D - D } : null, avg_mph: avg, should_mph: should, transit_end_n: transitRow?.n ?? null, ta_leg_s: taLeg, ta_max_s: st.taMax_s ?? 1170, leg_style: st.legStyle ?? 'restart',
       map_hint: this.started && !sch.inTransit(D) ? this.mapHint ?? null : null,   // set by the map: the car left a confident route guess
     };
     // The journal: what the crew was shown (an alert), and the state every 10 s with where the car was.

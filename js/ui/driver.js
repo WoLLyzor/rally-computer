@@ -24,7 +24,7 @@ export function mountDriver(container, { unit = 's' } = {}) {
   el.word = h('div', { class: 'dv-word' }, '');
   el.delta = h('div', { class: 'dv-delta' }, el.big, el.word);
   el.target = h('div', { class: 'dv-target' }, '--');
-  el.avg = h('div', { class: 'dv-limit' }, '');   // your actual average since the timed zone started
+  el.avg = h('div', { class: 'dv-limit' }, '');   // your actual average since the timed zone started, and what it should be
   el.speed = h('div', { class: 'dv-speed' },
     el.target, h('div', { class: 'dv-mph' }, 'mph'), el.avg);
   el.icon = h('div', { class: 'dv-icon' }, '');
@@ -73,7 +73,7 @@ export function mountDriver(container, { unit = 's' } = {}) {
     }
 
     el.target.textContent = live.target_mph != null ? Math.round(live.target_mph) : '--';
-    el.avg.textContent = live.avg_mph != null ? `avg ${live.avg_mph.toFixed(1)}${live.cast_mph ? ` · CAST ${live.cast_mph}` : ''}` : '';
+    el.avg.textContent = live.avg_mph != null ? `avg ${live.avg_mph.toFixed(1)}${live.should_mph != null ? ` · should ${live.should_mph.toFixed(1)}` : ''}` : '';
 
     const nx = live.next;
     if (nx) {

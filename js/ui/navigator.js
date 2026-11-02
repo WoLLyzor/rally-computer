@@ -52,14 +52,15 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
         h('button', { class: 'nv-bigbtn', onclick: closeSheet }, 'Cancel'),
         h('button', { class: 'nv-bigbtn nv-go', onclick: () => { closeSheet(); onOk(); } }, okLabel)));
   }
-  // Once started, tapping an instruction can set the distance there (after a pause, or whenever it has drifted).
+  // Once started, tapping an instruction says where the car is: on its way to it (the usual), or at its point now.
   function hereSheet(i) {
-    openSheet(`Are you at #${i.n} now?`,
-      h('p', { class: 'nv-sheet-note' }, `Tap "We're here" as you pass its point: the distance becomes ${fmtOm(i.om)}.`),
+    openSheet(`Heading to #${i.n}?`,
+      h('div', { class: 'nv-sum' }, explainEl(i, { glossary: gloss })),
+      h('p', { class: 'nv-sheet-note' }, `“Heading to #${i.n}”: you’re on your way to it. “At #${i.n} now”: only right at its point (OM ${fmtOm(i.om)}).`),
       h('div', { class: 'nv-sheet-btns' },
         h('button', { class: 'nv-bigbtn', onclick: closeSheet }, 'Cancel'),
-        h('button', { class: 'nv-bigbtn', onclick: () => { closeSheet(); act('jump', { n: i.n }); } }, 'Make next'),
-        h('button', { class: 'nv-bigbtn nv-go', onclick: () => { closeSheet(); act('here', { n: i.n }); } }, "We're here")));
+        h('button', { class: 'nv-bigbtn', onclick: () => { closeSheet(); act('here', { n: i.n }); } }, `At #${i.n} now`),
+        h('button', { class: 'nv-bigbtn nv-go', onclick: () => { closeSheet(); act('heading', { n: i.n }); } }, `Heading to #${i.n}`)));
   }
   function timeEditor(initial) {
     let v = Math.round(initial ?? 0);
@@ -162,17 +163,17 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
   const stat = (k, label, onclick) => { E.stats[k] = h('b', {}, '--'); return h('div', onclick ? { class: 'nv-stat nv-tap', onclick } : { class: 'nv-stat' }, h('span', {}, label), E.stats[k]); };
   // Most useful first: the CAST (tap to correct it), your actual average since the zone started, the speed to
   // drive to be on time, the speed now; the distance last.
-  const statsRow = h('div', { class: 'nv-stats' }, stat('cast', 'CAST ✎', () => castSheet()), stat('avg', 'AVG'), stat('target', 'TARGET'), stat('speed', 'SPEED'), stat('om', 'OM'));
+  // (The step, OM and the next instruction are in the step bar across the top.)
+  const statsRow = h('div', { class: 'nv-stats' }, stat('cast', 'CAST ✎', () => castSheet()), stat('avg', 'MY AVG'), stat('should', 'SHOULD'), stat('target', 'TARGET'), stat('speed', 'SPEED'));
 
   const btn = (label, cls, fn) => h('button', { class: 'nv-bigbtn ' + (cls || ''), onclick: fn }, label);
   E.offBtn = btn('Off course', 'nv-watch', () => { off = !off; syncOff(); act('offcourse', { on: off }); });
   function syncOff() { E.offBtn.textContent = off ? 'Back on course' : 'Off course'; E.offBtn.classList.toggle('nv-on', off); }
-  // Every control fits on screen at once: MARK, then one grid, most used first.
+  // Every control fits on screen at once, most used first. (Where the car is: tap its line in the list.)
   const buttons = h('div', { class: 'nv-buttons' },
-    btn('MARK', 'nv-mark', () => act('mark')),
     h('div', { class: 'nv-actions' },
       btn('RICHTA BEEPED', 'nv-go', () => richtaTap()), E.taBtn = btn('TA', '', taSheet), btn('Undo last', '', () => act('undo')),
-      btn('Restart time', '', restartSheet), E.offBtn,
+      E.offBtn,
       btn('End odo check', '', () => confirmSheet('End odometer check?', 'End check', () => act('odo_end'))),
       btn('More', '', () => moreSheet())));
 
@@ -184,17 +185,16 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
   E.logBody = h('div', { class: 'nv-logbody' });
   const logPanel = h('details', { class: 'nv-log' }, h('summary', {}, 'Log'), E.logBody);
 
-  // Simple mode: six big buttons, each saying what it's for. The fourth slot is START before the start and
-  // BACK ON ROUTE after a missed turn or when off course; it keeps its place (empty) otherwise.
+  // Simple mode: five big buttons, each saying what it's for. Beside DELAY: START before the start, BACK ON ROUTE
+  // after a missed turn or when off course, empty otherwise. Where the car is: tap its line in the list.
   const big = (label, sub, cls, fn) => h('button', { class: `nv-sbtn ${cls}`, onclick: fn }, h('b', {}, label), h('small', {}, sub));
   E.richtaBtn = big('RICHTA BEEPED', 'tap each time Richta beeps', 'nv-s-richta', () => richtaTap());
   E.richtaSub = E.richtaBtn.querySelector('small');
-  E.markBtn = big('MARK', 'as you pass a sign or landmark', 'nv-s-mark', () => act('mark'));
   E.delayBtn = big('DELAY', 'held up? add time', 'nv-s-delay', taSheet);
   E.ctxBtn = big('START', 'as you leave the start line', 'nv-s-ctx', () => ctxRun());
   E.undoBtn = big('UNDO', 'take back the last tap', 'nv-s-undo', () => act('undo'));
   E.moreBtn = big('MORE', 'other tools and help', 'nv-s-more', moreSheet);
-  const simpleBox = h('div', { class: 'nv-simple' }, E.richtaBtn, h('div', { class: 'nv-srow' }, E.markBtn, E.delayBtn), E.ctxBtn, h('div', { class: 'nv-srow' }, E.undoBtn, E.moreBtn));
+  const simpleBox = h('div', { class: 'nv-simple' }, E.richtaBtn, h('div', { class: 'nv-srow' }, E.delayBtn, E.ctxBtn), h('div', { class: 'nv-srow' }, E.undoBtn, E.moreBtn));
   function ctxRun() {
     if (!live || !live.started) act('start');
     else if (live.alert && live.alert.kind === 'missed_turn') act('here', { n: live.alert.n });
@@ -220,7 +220,6 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
       h('div', { class: 'nv-more-grid' },
         item('End odo check', 'Once, at the end of the odometer check, if MARK didn’t catch it.', () => confirmSheet('End odometer check?', 'End check', () => act('odo_end'))),
         item(off ? 'Back on course' : 'Off course', 'You took a wrong road: tap now, then again when you’re back where you left the route.', () => { off = !off; syncOff(); act('offcourse', { on: off }); }),
-        item('Restart time', 'Fix a restart time that doesn’t match Richta’s.', restartSheet),
         item('CAST', 'Correct the average speed in force if it doesn’t match the paper (or tap CAST).', () => castSheet()),
         ...moreItems.map((m) => item(m.label, m.note, m.run))),
       h('div', { class: 'nv-sheet-btns' }, h('button', { class: 'nv-bigbtn', onclick: closeSheet }, 'Close')));
@@ -283,7 +282,7 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
     E.transit.hidden = !tr;
     if (tr) E.transit.textContent = `TRANSIT · no timing until the next timed zone (#${l.transit_end_n})`;
     const f = (v) => (v == null ? '--' : Math.round(v));
-    E.stats.om.textContent = l.d_om == null || !l.started ? '--' : l.d_om.toFixed(2);
+    E.stats.should.textContent = l.should_mph == null ? '--' : l.should_mph.toFixed(1);
     E.stats.speed.textContent = l.speed_mph == null ? '--' : l.speed_mph.toFixed(1);
     E.stats.cast.textContent = f(l.cast_mph);
     E.stats.avg.textContent = l.avg_mph == null ? '--' : l.avg_mph.toFixed(1);
@@ -308,7 +307,6 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
     E.ctxBtn.style.visibility = ctx ? '' : 'hidden';
     if (ctx && E.ctxBtn.firstChild.textContent !== ctx[0]) { E.ctxBtn.firstChild.textContent = ctx[0]; E.ctxBtn.lastChild.textContent = ctx[1]; }
     E.richtaBtn.classList.toggle('nv-hint', c.act === 'richta');
-    E.markBtn.classList.toggle('nv-hint', c.act === 'mark');
     E.ctxBtn.classList.toggle('nv-hint', !!ctx && (c.act === 'start' || c.act === 'back'));
     const nx = l.next, key = nx ? nx.n + '|' + nx.text : '';
     if (key !== nextKey) {

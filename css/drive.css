@@ -133,7 +133,7 @@
 @media (prefers-reduced-motion:reduce){.nv-hint{animation:none}}
 
 /* ---- map, under the driver's numbers (the list and controls stay) ---- */
-.drive.with-map>div:first-child{display:flex;flex-direction:column}
+.drive.with-map>.dvpane{display:flex;flex-direction:column}
 .drive.with-map .dv-root{height:auto;flex:0 0 auto;flex-direction:row;flex-wrap:wrap;align-items:center;align-content:center;gap:0 3vw;padding:1vh 2vw}
 .drive.with-map .dv-alert{flex:0 0 100%;font-size:2.8vh;margin:0 0 .5vh}
 .drive.with-map .dv-delta{flex:1 1 auto}
@@ -187,3 +187,15 @@
 .mp-g-good{border-color:var(--good);color:var(--good)}
 .mp-g-watch{border-color:var(--watch);color:var(--watch)}
 .mp-g-low{color:var(--muted)}
+
+/* ---- step bar: always across the top of the Drive screen (the step, odometer, CAST, what to do and how far) ---- */
+.drive{grid-template-rows:auto minmax(0,1fr)}
+.stepbar{grid-column:1/-1;display:flex;align-items:center;gap:clamp(10px,1.6vw,22px);padding:6px 14px;background:var(--panel);border-bottom:2px solid var(--line);font-size:clamp(1.15rem,2.1vw,1.9rem);font-weight:700;white-space:nowrap;overflow:hidden;font-variant-numeric:tabular-nums}
+.stepbar .sb-n{color:var(--good);font-size:1.2em}
+.stepbar .sb-on{color:var(--info)}
+.stepbar .sb-off{color:var(--muted)}
+.stepbar .sb-do{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.stepbar .sb-dist{color:var(--good);font-size:1.15em}
+/* A smaller map: the driver's numbers get the room. */
+.drive.with-map .dv-root{flex:1 1 auto}
+.drive.with-map .mp-pane{flex:0 0 38%}

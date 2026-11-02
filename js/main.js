@@ -1,5 +1,5 @@
 // App shell and integration: screens, route state, sensors, live loop, persistence, offline cache.
-import { h, clear } from './ui/dom.js';
+import { h, clear, fmtOm, actionIcon, actionSummary } from './ui/dom.js';
 import { mountScan } from './ui/scan.js';
 import { mountVerify } from './ui/verify.js';
 import { mountSettings } from './ui/settings.js';
@@ -46,9 +46,9 @@ const listener = new RichtaListener({
     if (fresh.length) S.navApi?.toast(`🎤 Heard Richta. ${last}`);
   },
 });
-// On the road (2026-11-01) it heard beeps that weren't Richta's: the detector is strict now (core/beepdetect.js),
-// and a beep heard in a transit away from the next timed zone's start is ignored (LiveLoop.micPlausible).
-const HEAR_RICHTA = true;
+// Off: on the road (2026-11-01) it kept hearing beeps that weren't Richta's, even after making it strict. The
+// code stays for a rebuild from a real recording of Richta's beep in the running car.
+const HEAR_RICHTA = false;
 function syncListener() {
   const want = HEAR_RICHTA && S.settings.listenRichta && S.settings.richtaSound && RichtaListener.supported();
   if (want && !listener.listening) listener.start(S.settings.richtaSound).catch((e) => { console.warn('microphone', e); S.status.mic = `off: ${e.message}`; });
@@ -295,8 +295,24 @@ function showDrive() {
   if (!live.started && !simple) extras.unshift(startBtn);   // simple mode has its own big START
   app.append(topbar('Drive', extras));
   const grid = h('div', { class: `drive${driverOnly ? ' driver-only' : ''}` });
-  const dEl = h('div', {}), nEl = h('div', { class: 'navpane' });
-  grid.append(dEl, nEl); app.append(grid);
+  const dEl = h('div', { class: 'dvpane' }), nEl = h('div', { class: 'navpane' });
+  // The step bar, always across the top: the step being driven to, the odometer, the CAST (or no timing), and what
+  // to do there with how far it is.
+  const sb = { n: h('b', { class: 'sb-n' }, '#--'), om: h('span', { class: 'sb-om' }, 'OM --'), cast: h('span', { class: 'sb-cast' }, ''),
+    ico: h('span', { class: 'sb-ico' }, ''), what: h('span', { class: 'sb-what' }, ''), dist: h('b', { class: 'sb-dist' }, '') };
+  const stepBar = h('div', { class: 'stepbar' }, sb.n, sb.om, sb.cast, h('span', { class: 'sb-do' }, sb.ico, ' ', sb.what), sb.dist);
+  function updateStepBar(st) {
+    const nx = st.next, ins = nx?.ins;
+    sb.n.textContent = nx ? `#${nx.n}` : '#--';
+    sb.om.textContent = `OM ${st.started && st.d_om != null ? st.d_om.toFixed(2) : '--'}`;
+    const timed = st.zone !== 'transit' && st.cast_mph > 0;
+    sb.cast.textContent = st.zone === 'transit' ? 'NO TIMING' : timed ? `CAST ${Math.round(st.cast_mph)}` : 'NO CAST';
+    sb.cast.className = `sb-cast ${timed ? 'sb-on' : 'sb-off'}`;
+    sb.ico.textContent = ins ? actionIcon(ins) : '';
+    sb.what.textContent = ins ? actionSummary(ins) : nx?.text ?? 'No more instructions';
+    sb.dist.textContent = nx?.to_mi != null ? `${fmtOm(Math.max(0, nx.to_mi))} mi` : '';
+  }
+  grid.append(stepBar, dEl, nEl); app.append(grid);
   const driver = mountDriver(dEl, { unit: S.settings.timingUnit });
   const digest = S.route?.digest ?? null;
   const setSetting = (k, v) => { live.jot('set', { [k]: v }); S.settings[k] = v; saveSettings(S.settings); };
@@ -341,7 +357,7 @@ function showDrive() {
   S.driving = true;
   S.timer = setInterval(() => {
     const st = live.tick();
-    driver.update(st); nav.update(st);
+    driver.update(st); nav.update(st); updateStepBar(st);
     if (map && S.mapOn) map.update(st, live);
     if (++k % 10 === 0) {
       saveLive();
@@ -387,7 +403,7 @@ function logText() {
 function journalLines() {
   const zw = { T: 'transit', Z: 'timed zone', W: 'waiting', '-': '—' };
   const state = (s = {}) => [`D ${s.D ?? '--'}`, `OM ${s.om ?? '--'}`, `next #${s.nx ?? '--'}`, `${s.v ?? '--'} mph`, `CAST ${s.c ?? '--'}`, `target ${s.tg ?? '--'}`,
-    `avg ${s.av ?? '--'}`, s.d == null ? 'no timing' : s.d >= 0 ? `${s.d} s LATE` : `${-s.d} s EARLY`, zw[s.z] ?? '—',
+    `avg ${s.av ?? '--'} (should ${s.sh ?? '--'})`, s.d == null ? 'no timing' : s.d >= 0 ? `${s.d} s LATE` : `${-s.d} s EARLY`, zw[s.z] ?? '—',
     ...(s.rz ? [`a beep here ${s.rz[0] === '+' ? 'starts' : 'ends'} #${s.rz.slice(1)}`] : []), ...(s.rec ? ['RECOVERING'] : [])].join(' · ');
   const rest = (e) => { const { t, k, ...o } = e; return JSON.stringify(o); };
   return (live?.journal || []).map((e) => {
@@ -494,7 +510,7 @@ function showHelp() {
       [b('Keep both screens on and plugged in:'), ' this app on the tablet, on the Drive screen, and Richta on the phone. Don’t switch apps or press the power button: the tablet pauses an app that’s off screen.'],
       [b('Read the line at the top of the middle.'), ' It always says what to do now: what to tell the driver, how far ahead, and what speed. The voice says the same.'],
       [b('Every time Richta beeps, tap RICHTA BEEPED.'), ' No rush: a few seconds late is fine. At each restart gate, tap it as you cross, even if Richta stays quiet.'],
-      [b('MARK exactly at the end of the odometer check.'), ' This is the one tap that has to be on the spot. If it ends at a STOP sign, tap while you’re stopped there.'],
+      [b('At the end of the odometer check, tap its line in the list, then “At … now”.'), ' This is the one tap that has to be on the spot. If it ends at a STOP sign, tap while you’re stopped there.'],
       [b('Pressed something by mistake? UNDO.'), ' It takes back the last tap.']], { ol: true }),
     sec('2 · Before you leave home (needs internet)', [
       [b('Update the app:'), ' open it, close it, open it again. This page should then start with “The six things that matter most”.'],
@@ -505,7 +521,7 @@ function showHelp() {
     sec('3 · Practice run near the start (optional, about 30 minutes)', [
       [b('Load it:'), ' Home → Read → Load the practice route. Then Home → Drive.'],
       [b('Get to the start:'), ' from the Burger King, drive east on Gateway Avenue (away from Route 7) to its end at Dorman Road, and stop.'],
-      [b('START'), ' as you turn right onto Dorman Road. The odometer check runs 3.14 miles to the T at Furnace Road: stop there and tap MARK.'],
+      [b('START'), ' as you turn right onto Dorman Road. The odometer check runs 3.14 miles to the T at Furnace Road: stop there, tap line 5, then “At #5 now”.'],
       [b('Restart at Furnace Road:'), ' wait for the clock to show :00, turn right, and tap RICHTA BEEPED.'],
       [b('No Richta in practice:'), ' tap RICHTA BEEPED as you reach each CHECKPOINT line; the top line counts down to it.'],
       [b('Three segments,'), ' about 11 miles in all, then right (north) on Route 7, about 3 miles back to the Burger King.'],
@@ -521,52 +537,48 @@ function showHelp() {
       [b('Or photograph them,'), ' only with the rallymaster’s written OK: it needs internet and your API key (Settings → Reading profile → Cloud reading). Read → Pick from files → select every page → Read pages. About 3 minutes for 22 pages.'],
       [b('The driver checks every line'), ' (Home → Verify) against the paper. Under each line is what it means in plain English. Fix anything that doesn’t match, then Done. Watch the CAST speeds (CAST = the average speed to drive), the mileages, and that each restart line reads “Restart…”.'],
       [b('Time table'), ' (Home): each segment’s times. A total that looks wrong (say 20 minutes for 3 miles) means a misread line: fix it. Print it if you can; it’s the paper backup.'],
-      [b('From the general instructions (GIs), in Settings → Rally:'), ' timing unit (seconds or hundredths), the largest time allowance (9:30 or 19:30). Keep “Timing carries on from the restart”.'],
-      [b('Hear Richta (optional):'), ' Drive → MORE → Hear Richta: learn its beep, then run Richta’s Sound Check with the phone next to the tablet. After that the tablet taps RICHTA BEEPED for you and says “Heard Richta”. You can still tap it yourself.']]),
+      [b('From the general instructions (GIs), in Settings → Rally:'), ' timing unit (seconds or hundredths), the largest time allowance (9:30 or 19:30). Keep “Timing carries on from the restart”.']]),
     sec('6 · The start', [
       [b('Home → Drive.'), ' Tap Full screen at the top.'],
       [b('The voice counts down:'), ' “One minute to your start”, “Thirty seconds”, “Ten seconds”, “Five”, “Go”.'],
       [b('Tap START as you leave the start line'), ' (or RICHTA BEEPED if Richta beeps). Forgot? It starts by itself when you drive off near your start time. A late tap is fine: it counts from where you pulled away.'],
-      [b('Odometer check:'), ' usually first. MARK exactly at its end (part 1).'],
+      [b('Odometer check:'), ' usually first. At its end, tap its line, then “At … now” (part 1).'],
       [b('Time alignment:'), ' if the timing starts at a restart away from the meeting point, drive there by the instructions, leave it at your time, and tap RICHTA BEEPED as you cross it.']]),
     sec('7 · Driving a segment', [
       [b('Navigator:'), ' read the top line to the driver, for example “In 700 yards: Turn RIGHT onto Smith Rd. Speed up to 44 (now 42). 4 s late.” The voice calls the turns and speeds too.'],
       [b('Driver:'), ' the big number on the left is how many seconds LATE or EARLY you are (green near zero). Under it is the speed to drive. Never go over the speed limit.'],
-      [b('“Watch for: …”'), ' is an instruction with no mileage, like a sign. Tap MARK as you pass it.'],
+      [b('“Watch for: …”'), ' is an instruction with no mileage, like a sign. As you pass it, tap its line, then “At … now”.'],
       [b('Pause (“GO IN 0:20”):'), ' stop and wait. The app counts down and says GO.'],
-      [b('Held up'), ' by something you couldn’t help (train, tractor, school bus, a slow car, waiting at a one-lane bridge)? Tap DELAY right away, tap the green total, then press TA+ in Richta the number of times shown. Later is too late: the checkpoints are hidden.'],
-      [b('Speed limit signs (optional):'), ' MORE → tap the limit. The app never asks for more than that.']]),
+      [b('Held up'), ' by something you couldn’t help (train, tractor, school bus, a slow car, waiting at a one-lane bridge)? Tap DELAY right away, tap the green total, then press TA+ in Richta the number of times shown. Later is too late: the checkpoints are hidden.']]),
     sec('8 · End of a segment, and the restart', [
       [b('“Segment done: no timing now”:'), ' you can stop and enjoy the bridge. The app stays quiet until the restart. It says this after the segment’s last checkpoint. A beep with more of the segment still ahead is just logged and the timing goes on; if you then stand still for a minute near it, the app takes it as the segment’s end.'],
       [b('The top line shows the restart:'), ' a countdown to its time, or “leave on any whole minute, crossing just after :00”.'],
-      [b('Leave on time and tap RICHTA BEEPED as you cross the restart gate.'), ' It says “Segment started. Timing from 11 42” (or “Restart counted at 11 42” when it went by the mileage). Check that matches Richta’s out time. If it doesn’t: MORE → Restart time.'],
+      [b('Leave on time and tap RICHTA BEEPED as you cross the restart gate.'), ' It says “Segment started. Timing from 11 42” (or “Restart counted at 11 42” when it went by the mileage). Check that matches Richta’s out time.'],
       [b('Each segment starts fresh:'), ' being late in one doesn’t carry into the next.']]),
     sec('9 · If something goes wrong', [
       [b('Wrong tap:'), ' UNDO.'],
       [b('“Missed turn?”:'), ' the top line says how to get back: turn around when safe, drive back, then make the turn. Tap BACK ON ROUTE as you make it.'],
       [b('“Off the route?” (from the map):'), ' check the last instruction. If you did turn wrong, go back to the pink line and tap BACK ON ROUTE there. If not, ignore it.'],
       [b('Took a wrong road and nothing says so:'), ' MORE → Off course. When you’re back where you left the route: MORE → Back on course. The extra miles come off.'],
-      [b('“The app was paused”'), ' (the tablet slept or another app came up): keep going; it fixes itself at the next turn. Faster: tap the instruction you’re passing in the list, then We’re here.'],
+      [b('“The app was paused”'), ' (the tablet slept or another app came up): keep going; it fixes itself at the next turn. Faster: tap the line you’re heading to, then “Heading to”.'],
       [b('The app closed:'), ' open it again. It carries on where it was.'],
       [b('“No GPS signal”:'), ' check the RaceBox is on, then Connect RaceBox at the top.'],
-      [b('“Odometer check looks wrong”:'), ' if MARK was tapped at the wrong place, UNDO.'],
-      [b('The app seems lost:'), ' drive by the paper and the Time table. It catches up at the next turn, or with We’re here.']]),
+      [b('“Odometer check looks wrong”:'), ' if its end was set at the wrong place, UNDO.'],
+      [b('The app seems lost:'), ' drive by the paper and the Time table. It catches up at the next turn, or tap the line you’re heading to, then “Heading to”.']]),
     sec('10 · The Drive screen, piece by piece', [
-      [b('Left, top:'), ' the big number and LATE / EARLY / ON TIME. Under it: the speed to drive and the next instruction.'],
+      [b('Across the top, always:'), ' the step you’re driving to, the odometer (OM), the CAST (or NO TIMING in a transit), what to do there and how far it is.'],
+      [b('Left, top:'), ' the big number and LATE / EARLY / ON TIME for this timed zone. Under it: the speed to drive, your average since the zone started, and what it should be.'],
       [b('Left, bottom: the map.'), ' It turns with the car. Green line: where you’ve been. Blue road: where the next turn goes. Pink line: the app’s guess at the route, with how sure it is (%), dashed when unsure. Trust the instructions over the map.'],
       [b('Middle:'), ' at the top, what to do now. Under it, the instructions; the highlighted one is next, with the time you should get there.'],
-      [b('Right:'), ' the six buttons. RICHTA BEEPED, MARK, DELAY, START (later BACK ON ROUTE), UNDO, MORE.'],
-      [b('Top bar:'), ' ‹ Home, Hints, Glossary, Hide map, Connect RaceBox, Full screen. “🎤 Hearing Richta” shows when the tablet is listening.']]),
+      [b('Right:'), ' RICHTA BEEPED, DELAY, START (later BACK ON ROUTE), UNDO, MORE. Above them: CAST (tap to correct it), MY AVG against SHOULD, TARGET, SPEED.'],
+      [b('Where you are:'), ' tap a line in the list. “Heading to” it (on your way: the usual), or “At … now” only right at its point.'],
+      [b('Top bar:'), ' ‹ Home, Hints, Glossary, Hide map, Connect RaceBox, Full screen.']]),
     sec('11 · The MORE menu (now and then)', [
-      [b('Speed limit sign:'), ' 25, 35, 45, 55 or other.'],
-      [b('End odo check:'), ' only if MARK didn’t catch the end of the odometer check, tapped right at its end.'],
+      [b('End odo check:'), ' only if the end of the odometer check wasn’t set, tapped right at its end.'],
       [b('Off course / Back on course:'), ' see part 9.'],
-      [b('Restart time:'), ' fix a restart time that doesn’t match Richta’s.'],
-      [b('Staffed control:'), ' only if a person at a control gives you an out time.'],
-      [b('Rules:'), ' the special rules read from the general instructions.'],
+      [b('CAST:'), ' correct the average speed if it doesn’t match the paper (or tap CAST).'],
       [b('Change colours:'), ' Dark, Daylight (bright sun), High contrast, Covered bridge.'],
-      [b('Show all controls / Simple controls:'), ' every button at once, or back to the six big ones.'],
-      [b('Hear Richta:'), ' learn its beep, or turn listening on and off. Turn it off if the car speakers start acting like a phone call.']]),
+      [b('Show all controls / Simple controls:'), ' every button at once, or back to the big ones.']]),
     sec('12 · After the finish', [
       [b('Home → Log → Save file.'), ' It keeps everything that happened and a GPS track, in case a score is questioned.']]),
     sec('13 · Settings (set once)', [
