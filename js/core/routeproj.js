@@ -81,11 +81,11 @@ export function buildGraph(map) {
   return { map, ra, rb, len, hA, hB, vx: Float64Array.from(vx), vy: Float64Array.from(vy), start, hRoad, hFwd };
 }
 
-const out = (g, r, f) => (f ? g.hA[r] : g.hB[r]);                 // heading leaving the vertex along r
-const arrive = (g, r, f) => norm((f ? g.hB[r] : g.hA[r]) + 180);   // heading arriving at the far end
+export const out = (g, r, f) => (f ? g.hA[r] : g.hB[r]);          // heading leaving the vertex along r
+export const arrive = (g, r, f) => norm((f ? g.hB[r] : g.hA[r]) + 180);   // heading arriving at the far end
 
 // Ways on from vertex v for a car arriving along road `road` (travelled forward if `fwd`) heading `hin`.
-function branches(g, v, road, fwd, hin) {
+export function branches(g, v, road, fwd, hin) {
   const bs = [];
   for (let p = g.start[v]; p < g.start[v + 1]; p++) {
     const r = g.hRoad[p], f = g.hFwd[p] === 1;
@@ -100,7 +100,7 @@ const shares = (road, ref) => ref.length > 0 && roadKeys(road).some((k) => ref.i
 
 // The main road on from cursor c: the same road name (bending up to 120°), else the smallest bend
 // (service roads and tracks only when nothing else goes on). amb: another way on is about as plausible.
-function mainRoad(g, c) {
+export function mainRoad(g, c) {
   const bs = branches(g, c.v, c.road, c.fwd, c.hin), roads = g.map.roads;
   if (!bs.length) return null;
   if (bs.length === 1) return { ...bs[0], amb: false };
@@ -118,13 +118,13 @@ function mainRoad(g, c) {
 }
 
 // Path: points from the car and their distances along it.
-function push(P, x, y) {
+export function push(P, x, y) {
   const n = P.pts.length, [px, py] = P.pts[n - 1], d = Math.hypot(x - px, y - py);
   if (d < 1e-6) return;
   P.pts.push([x, y]); P.cum.push(P.cum[n - 1] + d);
 }
-const plen = (P) => P.cum[P.cum.length - 1];
-function cutCount(P, n) { P.pts.length = n; P.cum.length = n; }
+export const plen = (P) => P.cum[P.cum.length - 1];
+export function cutCount(P, n) { P.pts.length = n; P.cum.length = n; }
 function cutAt(P, s) {
   const cum = P.cum;
   if (cum[cum.length - 1] <= s) return;
@@ -137,7 +137,7 @@ function cutAt(P, s) {
 }
 
 // Drive road r (forward if f) to its far end. ref: the road names being followed (kept over unnamed roads).
-function traverse(g, P, r, f, ref) {
+export function traverse(g, P, r, f, ref) {
   const road = g.map.roads[r], xy = road.xy, n = xy.length;
   if (f) for (let j = 2; j < n; j += 2) push(P, xy[j], xy[j + 1]);
   else for (let j = n - 4; j >= 0; j -= 2) push(P, xy[j], xy[j + 1]);
@@ -146,7 +146,7 @@ function traverse(g, P, r, f, ref) {
 }
 
 // Follow the main road from cursor c until the path is `until` long (or a dead end), noting each vertex.
-function walk(g, P, c, until) {
+export function walk(g, P, c, until) {
   const steps = [];
   for (let guard = 0; guard < 5000; guard++) {
     const st = { ...c, s: plen(P), n: P.pts.length, amb: false };
@@ -160,7 +160,7 @@ function walk(g, P, c, until) {
   return steps;
 }
 // Ambiguous forks among the first j choices of a walk, or among those made before distance s.
-const forks = (steps, j) => { let k = 0; for (let i = 0; i < j && i < steps.length; i++) if (steps[i].amb) k++; return FORK ** k; };
+export const forks = (steps, j) => { let k = 0; for (let i = 0; i < j && i < steps.length; i++) if (steps[i].amb) k++; return FORK ** k; };
 const forksBefore = (steps, s) => { const j = steps.findIndex((st) => st.s >= s); return forks(steps, j < 0 ? steps.length : j); };
 
 // How well a turn angle (+ = right) fits a direction: piecewise linear through [angle, fit] points.
@@ -168,7 +168,7 @@ const FIT = { R: [[20, 0], [45, 0.85], [55, 1], [125, 1], [140, 0.85], [165, 0]]
   S: [[-40, 0], [-25, 0.85], [-12, 1], [12, 1], [25, 0.85], [40, 0]] };
 FIT.L = FIT.R.map(([a, f]) => [-a, f]).reverse();
 FIT.BL = FIT.BR.map(([a, f]) => [-a, f]).reverse();
-function angleFit(dir, a) {
+export function angleFit(dir, a) {
   const t = FIT[dir];
   if (!t || a <= t[0][0] || a >= t[t.length - 1][0]) return 0;
   let i = 1;
@@ -186,7 +186,7 @@ function core(k) {   // "OLD FRENCH RD" ~ "OLD FRENCH"; route numbers by number 
   if (w.length > 1 && TYPE.has(w[w.length - 1])) w.pop();
   return w.join(' ');
 }
-function nameFit(road, key, soft) {
+export function nameFit(road, key, soft) {
   if (!key) return 1;
   const keys = roadKeys(road);
   if (!keys.length) return soft ? 0.9 : 0.85;
@@ -197,7 +197,7 @@ function nameFit(road, key, soft) {
 }
 
 // The name a turn should be onto: onto, else the text of a sign it turns at (weaker: signs aren't always names).
-function turnName(row) {
+export function turnName(row) {
   const key = roadKey(row.onto);
   if (key) return { key, soft: false };
   if (row.cue === 'sign' && row.sign_text && (!row.sign_rel || row.sign_rel === 'at')) return { key: roadKey(row.sign_text), soft: true };
@@ -220,7 +220,8 @@ function junctionBehind(g, road, f, d, limit) {
 
 // Score every way to make `row`'s turn: branches of the junctions on the main road within the window, plus
 // (first turn only) "already made" at the junction just behind the car. Returns the best with its conf.
-function pickTurn(g, steps, row, E, W, maxM, behind) {
+// Every way to make `row`'s turn at the junctions of `steps` within E ± W metres, scored (unsorted).
+export function turnCandidates(g, steps, row, E, W, maxM) {
   const roads = g.map.roads, { key, soft } = turnName(row);
   const dir = row.cue === 'Y' && (row.dir === 'L' || row.dir === 'R') ? `B${row.dir}` : row.dir;   // "L at Y": the left way
   const cands = [];
@@ -250,6 +251,13 @@ function pickTurn(g, steps, row, E, W, maxM, behind) {
       cands.push({ j, b, v: st.v, head: out(g, b.road, b.fwd), score: fit * name * kind * (1 - 0.6 * e * e * e), unnamed: !roadKeys(roads[b.road]).length, exact: name === 1 && !!key });
     }
   }
+  return cands;
+}
+
+function pickTurn(g, steps, row, E, W, maxM, behind) {
+  const roads = g.map.roads, { key, soft } = turnName(row);
+  const dir = row.cue === 'Y' && (row.dir === 'L' || row.dir === 'R') ? `B${row.dir}` : row.dir;   // "L at Y": the left way
+  const cands = turnCandidates(g, steps, row, E, W, maxM);
   if (behind) {
     const jb = behind, h = out(g, jb.road, jb.fwd);
     let fit = 0;

@@ -23,7 +23,7 @@
     .home button.primary { background: var(--good); color: var(--on-good); border-color: var(--good); font-weight: 700; }
     .topbar { display: flex; gap: 8px; align-items: center; padding: 6px 8px; background: var(--topbar); border-bottom: 1px solid var(--line); }
     .topbar .sp { flex: 1; }
-    .drive { display: grid; grid-template-columns: 40% 60%; height: calc(100dvh - 70px); }
+    .drive { display: grid; grid-template-columns: var(--left-col, 40%) minmax(0, 1fr); position: relative; height: calc(100dvh - 70px); }
     .drive.driver-only { grid-template-columns: 100%; }
     .drive.driver-only .navpane { display: none; }
     .drive > div { min-height: 0; overflow: hidden; position: relative; }

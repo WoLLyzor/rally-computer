@@ -308,11 +308,27 @@ function showDrive() {
     const timed = st.zone !== 'transit' && st.cast_mph > 0;
     sb.cast.textContent = st.zone === 'transit' ? 'NO TIMING' : timed ? `CAST ${Math.round(st.cast_mph)}` : 'NO CAST';
     sb.cast.className = `sb-cast ${timed ? 'sb-on' : 'sb-off'}`;
+    stepBar.dataset.zone = ins?.zk?.zone ?? 'untimed';
     sb.ico.textContent = ins ? actionIcon(ins) : '';
     sb.what.textContent = ins ? actionSummary(ins) : nx?.text ?? 'No more instructions';
     sb.dist.textContent = nx?.to_mi != null ? `${fmtOm(Math.max(0, nx.to_mi))} mi` : '';
   }
   grid.append(stepBar, dEl, nEl); app.append(grid);
+  // Resizable layout: CSS variables on .drive (defaults = the old fixed layout), saved as store 'layout'.
+  const clampN = (v, a, b) => Math.min(b, Math.max(a, v));
+  const lay0 = store.get('layout', {}) || {};
+  const laySt = { leftPct: 40, mapPct: null, listPct: null, listScale: 1, ...lay0 };
+  function applyLayout() {
+    const set = (k, v) => (v == null ? grid.style.removeProperty(k) : grid.style.setProperty(k, v));
+    set('--left-col', `${clampN(+laySt.leftPct || 40, 25, 60)}%`);
+    set('--map-h', laySt.mapPct == null ? null : `${clampN(+laySt.mapPct, 15, 75)}%`);
+    set('--map-grow', laySt.mapPct == null ? null : '0');
+    set('--list-col', laySt.listPct == null ? null : `${clampN(+laySt.listPct, 30, 70)}fr`);
+    set('--btn-col', laySt.listPct == null ? null : `${100 - clampN(+laySt.listPct, 30, 70)}fr`);
+    set('--list-scale', laySt.listScale == null ? null : String(clampN(+laySt.listScale || 1, 0.8, 1.6)));
+  }
+  const layout = { get: () => laySt, patch: (p) => { Object.assign(laySt, p); applyLayout(); store.set('layout', { leftPct: laySt.leftPct, mapPct: laySt.mapPct, listPct: laySt.listPct, listScale: laySt.listScale }); } };
+  applyLayout();
   const driver = mountDriver(dEl, { unit: S.settings.timingUnit });
   const digest = S.route?.digest ?? null;
   const setSetting = (k, v) => { live.jot('set', { [k]: v }); S.settings[k] = v; saveSettings(S.settings); };
@@ -328,7 +344,7 @@ function showDrive() {
       run: () => { setSetting('listenRichta', !S.settings.listenRichta); syncListener(); route(); } }] : []),
   ];
   const nav = mountNavigator(nEl, { instructions: live.schedule.rows, table: live.schedule.table(), unit: S.settings.timingUnit, digest,
-    mode: simple ? 'simple' : 'full', startTod: clockStart(), moreItems,
+    mode: simple ? 'simple' : 'full', startTod: clockStart(), moreItems, layout,
     onUi: (what, d) => live.jot('ui', { what, ...d }),
     onAction: (name, p) => {
       const n0 = live.log.length;
@@ -339,7 +355,13 @@ function showDrive() {
     } });
   // The map, under the driver's numbers (Map / Hide map in the top bar); the list and controls stay.
   const mEl = h('div', { class: 'mp-pane', hidden: true });
-  dEl.append(mEl);
+  const mapGrip = nav.grip('rz-h rz-map', 'Drag to resize the map', (x, y) => {
+    const r = dEl.getBoundingClientRect(); if (r.height > 0) layout.patch({ mapPct: Math.round(clampN(((r.bottom - y) / r.height) * 100, 15, 75)) });
+  });
+  dEl.append(mapGrip, mEl);
+  if (!driverOnly) grid.append(nav.grip('rz-v rz-left', 'Drag to resize the columns', (x) => {
+    const r = grid.getBoundingClientRect(); if (r.width > 0) layout.patch({ leftPct: Math.round(clampN(((x - r.left) / r.width) * 100, 25, 60)) });
+  }));
   let map = null;
   function setMap(on) {
     S.mapOn = on; store.set('mapOn', on);

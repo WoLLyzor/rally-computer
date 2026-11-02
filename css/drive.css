@@ -27,14 +27,14 @@
 /* ---- navigator ---- */
 .nv-root{box-sizing:border-box;height:100vh;height:100dvh;display:flex;flex-direction:column;background:var(--bg);color:var(--text);padding:8px;gap:8px;position:relative;overflow:hidden;font-variant-numeric:tabular-nums}
 .nv-alert{background:var(--watch);color:var(--on-watch);font-weight:800;font-size:1.5rem;padding:10px 16px;border-radius:10px;text-align:center}
-.nv-cols{flex:1;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;min-height:0}
+.nv-cols{flex:1;display:grid;grid-template-columns:minmax(0,var(--list-col,1fr)) 0 minmax(0,var(--btn-col,1fr));column-gap:4px;min-height:0}
 .nv-list{overflow-y:auto;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);min-height:0}
-.nv-row{display:grid;grid-template-columns:3ch 6ch 2.2em minmax(0,1fr) auto;gap:10px;align-items:center;padding:12px 12px;border-bottom:1px solid var(--line);cursor:pointer;min-height:56px;box-sizing:border-box}
-.nv-n{color:var(--muted);text-align:right}.nv-om{color:var(--muted)}
+.nv-row{font-size:calc(1rem * var(--list-scale,1));display:grid;grid-template-columns:3ch max-content 2.2em minmax(0,1fr) auto;gap:10px;align-items:center;padding:12px 12px 12px 8px;border-bottom:1px solid var(--line);cursor:pointer;min-height:56px;box-sizing:border-box}
+.nv-n{color:var(--text);text-align:right;font-weight:800;font-size:1.35em}.nv-meta{display:flex;flex-direction:column;align-items:flex-start;line-height:1.2;min-width:6ch}.nv-om{color:var(--muted)}
 .nv-ico{font-size:1.5rem;text-align:center;color:var(--info)}
 .nv-sum{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .nv-pt{color:var(--info);font-weight:600}
-.nv-cur{background:var(--sel);border-left:6px solid var(--good);font-weight:700}
+.nv-cur{background:var(--sel);outline:3px solid var(--text);outline-offset:-3px;font-weight:700}
 .nv-past{opacity:.4}
 .nv-right{overflow-y:auto;display:flex;flex-direction:column;gap:8px;min-height:0}
 .nv-top{display:flex;justify-content:space-between;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:8px 16px}
@@ -125,7 +125,7 @@
 @keyframes nvpulse{0%,100%{outline-color:var(--watch)}50%{outline-color:transparent}}
 .nv-mode-simple .nv-next,.nv-mode-simple .nv-buttons,.nv-mode-simple .nv-log,.nv-mode-simple .nv-alert{display:none}
 .nv-mode-full .nv-simple{display:none}
-.nv-mode-simple .nv-cols{grid-template-columns:minmax(0,1.08fr) minmax(0,1fr)}
+.nv-mode-simple .nv-cols{grid-template-columns:minmax(0,var(--list-col,1.08fr)) 0 minmax(0,var(--btn-col,1fr))}
 .nv-more-lim{margin-bottom:10px}
 .nv-more-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .nv-more-item{display:flex;flex-direction:column;gap:4px}
@@ -190,7 +190,7 @@
 
 /* ---- step bar: always across the top of the Drive screen (the step, odometer, CAST, what to do and how far) ---- */
 .drive{grid-template-rows:auto minmax(0,1fr)}
-.stepbar{grid-column:1/-1;display:flex;align-items:center;gap:clamp(10px,1.6vw,22px);padding:6px 14px;background:var(--panel);border-bottom:2px solid var(--line);font-size:clamp(1.15rem,2.1vw,1.9rem);font-weight:700;white-space:nowrap;overflow:hidden;font-variant-numeric:tabular-nums}
+.stepbar{border-left:14px solid transparent;grid-column:1/-1;display:flex;align-items:center;gap:clamp(10px,1.6vw,22px);padding:6px 14px;background:var(--panel);border-bottom:2px solid var(--line);font-size:clamp(1.15rem,2.1vw,1.9rem);font-weight:700;white-space:nowrap;overflow:hidden;font-variant-numeric:tabular-nums}
 .stepbar .sb-n{color:var(--good);font-size:1.2em}
 .stepbar .sb-on{color:var(--info)}
 .stepbar .sb-off{color:var(--muted)}
@@ -199,3 +199,42 @@
 /* A smaller map: the driver's numbers get the room. */
 .drive.with-map .dv-root{flex:1 1 auto}
 .drive.with-map .mp-pane{flex:0 0 38%}
+
+/* ---- zone colours (timed = good, transit = muted, rest = watch), list rows and step bar ---- */
+.nv-row{border-left:8px solid transparent}
+.nv-z-timed{border-left-color:var(--good);background:color-mix(in srgb,var(--good) 13%,transparent)}
+.nv-z-transit{border-left-color:var(--muted);background:color-mix(in srgb,var(--muted) 13%,transparent)}
+.nv-z-rest{border-left-color:var(--watch);background:color-mix(in srgb,var(--watch) 15%,transparent)}
+.nv-row.nv-cur{background:var(--sel)}
+.nv-cast{font-weight:800;font-size:.9em;white-space:nowrap;color:var(--text)}
+.nv-cast-new{color:var(--on-good);background:var(--info);border-radius:6px;padding:0 6px;margin-top:2px}
+.nv-chip{display:inline-block;font-size:.65em;font-weight:800;letter-spacing:.06em;padding:1px 8px;margin-bottom:3px;border-radius:999px;border:2px solid var(--muted);color:var(--text)}
+.nv-chip-timed{border-color:var(--good)}.nv-chip-rest{border-color:var(--watch)}.nv-chip-transit{border-color:var(--muted)}
+.nv-sum{min-width:0}
+.nv-listwrap{display:flex;flex-direction:column;min-height:0;min-width:0}
+.nv-listwrap>.nv-list{flex:1 1 auto}
+.nv-listhead{display:flex;align-items:center;gap:8px;padding:2px 4px;color:var(--muted);font-size:.85rem}
+.nv-listhead-t{flex:1}
+.nv-scale{min-width:48px;min-height:40px;padding:0 10px;font-size:1.1rem;font-weight:800}
+.nv-scale-lbl{min-width:3.5ch;text-align:center}
+.stepbar[data-zone=timed]{border-left-color:var(--good);border-bottom-color:var(--good)}
+.stepbar[data-zone=transit]{border-left-color:var(--muted);border-bottom-color:var(--muted)}
+.stepbar[data-zone=rest]{border-left-color:var(--watch);border-bottom-color:var(--watch)}
+/* ---- drag handles ---- */
+.drive>.rz,.dvpane>.rz,.nv-cols>.rz{position:relative;z-index:6;display:flex;align-items:center;justify-content:center;overflow:visible;cursor:col-resize;touch-action:none;user-select:none}
+.rz-grip{background:var(--muted);border-radius:3px;opacity:.75;pointer-events:none}
+.rz-v{width:24px;justify-self:center;margin-left:-12px}
+.rz-v .rz-grip{width:6px;height:56px}
+.rz-h{height:24px;margin:-12px 0;flex:0 0 24px;cursor:row-resize;width:100%}
+.rz-h .rz-grip{height:6px;width:56px}
+.rz-on .rz-grip,.rz:hover .rz-grip{background:var(--info);opacity:1}
+.drive>.rz-left{grid-column:1;grid-row:2;justify-self:end;margin:0 -12px 0 0}
+.drive:not(.with-map) .rz-map,.drive.driver-only .rz{display:none}
+.drive.with-map .mp-pane{flex:var(--map-grow,0) 0 var(--map-h,38%)}
+@media (orientation:portrait){.drive>.rz-left,.nv-cols>.rz-list{display:none}}
+.nv-cols>.rz-list{margin:0}
+
+/* Each pane in its own cell; the column handle lies over their boundary (not a grid cell of its own). */
+.drive>.dvpane{grid-column:1;grid-row:2}
+.drive>.navpane{grid-column:2;grid-row:2}
+.drive.driver-only>.dvpane{grid-column:1/-1}

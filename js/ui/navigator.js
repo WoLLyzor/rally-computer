@@ -21,7 +21,22 @@ export function fmtTod(s, unit) {
   return `${p2(H)}:${p2(M)}:${p2(Math.floor(S))}`;
 }
 
-export function mountNavigator(container, { instructions = [], table = [], unit = 's', digest = null, onAction, onUi, mode = 'simple', startTod = null, moreItems = [] } = {}) {
+// A draggable divider: pointer events (mouse and touch), >=24px hit area, visible grip. onMove(clientX, clientY).
+export function dragHandle(cls, label, onMove, onEnd) {
+  const el = h('div', { class: `rz ${cls}`, role: 'separator', 'aria-label': label, title: label }, h('span', { class: 'rz-grip' }));
+  el.style.touchAction = 'none';
+  el.addEventListener('pointerdown', (e) => {
+    e.preventDefault(); try { el.setPointerCapture(e.pointerId); } catch {}
+    el.classList.add('rz-on');
+    const mv = (ev) => onMove(ev.clientX, ev.clientY);
+    const up = () => { el.classList.remove('rz-on'); el.removeEventListener('pointermove', mv); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up); onEnd && onEnd(); };
+    el.addEventListener('pointermove', mv); el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
+  });
+  return el;
+}
+const ZONE_LABEL = { timed: 'TIMED ZONE', transit: 'TRANSIT', rest: 'BRIDGE / REST', untimed: 'UNTIMED' };
+
+export function mountNavigator(container, { instructions = [], table = [], unit = 's', digest = null, onAction, onUi, mode = 'simple', startTod = null, moreItems = [], layout = null } = {}) {
   const act = (name, arg) => { try { onAction && onAction(name, arg); } catch (e) { console.error(e); } };
   // The journal (onUi): sheets opened and how they closed, lines tapped, coach lines and toasts shown.
   const ui = (what, d = {}) => { try { onUi && onUi(what, d); } catch (e) { console.error(e); } };
@@ -209,7 +224,21 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
   const right = h('div', { class: 'nv-right' },
     h('div', { class: 'nv-top' }, E.clock, h('div', { class: 'nv-delta' }, E.dBig, E.dWord)),
     E.transit, E.next, statsRow, simpleBox, buttons, status, logPanel);
-  const root = h('div', { class: `nv-root nv-mode-${mode}` }, E.alert, E.coach, E.toast, h('div', { class: 'nv-cols' }, E.list, right));
+  // List header: text size A- / A+ (0.8 to 1.6), kept in the layout store and applied as --list-scale on .drive.
+  const lay = layout || { get: () => ({}), patch: () => {} };
+  const scaleLbl = h('span', { class: 'nv-scale-lbl' }, '');
+  const showScale = () => { scaleLbl.textContent = `${Math.round((lay.get().listScale ?? 1) * 100)}%`; };
+  const bump = (d) => { const v = Math.round(Math.min(1.6, Math.max(0.8, (lay.get().listScale ?? 1) + d)) * 10) / 10; lay.patch({ listScale: v }); showScale(); };
+  showScale();
+  const listHead = h('div', { class: 'nv-listhead' }, h('span', { class: 'nv-listhead-t' }, 'List text'),
+    h('button', { class: 'nv-scale', 'aria-label': 'Smaller list text', onclick: () => bump(-0.1) }, 'A−'), scaleLbl,
+    h('button', { class: 'nv-scale', 'aria-label': 'Larger list text', onclick: () => bump(0.1) }, 'A+'));
+  const colsEl = h('div', { class: 'nv-cols' });
+  const listGrip = dragHandle('rz-v rz-list', 'Drag to resize the list', (x) => {
+    const r = colsEl.getBoundingClientRect(); if (r.width > 0) lay.patch({ listPct: Math.round(Math.min(70, Math.max(30, ((x - r.left) / r.width) * 100))) });
+  });
+  colsEl.append(h('div', { class: 'nv-listwrap' }, listHead, E.list), listGrip, right);
+  const root = h('div', { class: `nv-root nv-mode-${mode}` }, E.alert, E.coach, E.toast, colsEl);
   container.appendChild(root);
 
   // MORE: the tools needed now and then, each with one line on when to use it.
@@ -240,12 +269,16 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
     const byN = new Map(tbl.map((t) => [t.n, t]));
     for (const i of ins) {
       const t = byN.get(i.n);
-      const row = h('div', { class: 'nv-row', role: 'listitem', dataset: { n: i.n },
+      const zk = i.zk || {}, zone = zk.zone || 'untimed';
+      const castTxt = zone === 'timed' && zk.cast != null ? `CAST ${zk.cast}` : '';
+      const row = h('div', { class: `nv-row nv-z-${zone}`, role: 'listitem', dataset: { n: i.n },
         onclick: () => { ui('row', { n: i.n }); return live && live.started && i.D != null ? hereSheet(i) : confirmSheet(`Make #${i.n} the next instruction?`, 'Make next', () => act('jump', { n: i.n })); } },
         h('span', { class: 'nv-n' }, i.n),
-        h('span', { class: 'nv-om' }, fmtOm(i.om)),
+        h('span', { class: 'nv-meta' }, h('span', { class: 'nv-om' }, fmtOm(i.om)),
+          castTxt ? h('span', { class: 'nv-cast' }, castTxt) : null,
+          zk.castSet != null ? h('span', { class: 'nv-cast nv-cast-new' }, `→ CAST ${zk.castSet}`) : null),
         h('span', { class: 'nv-ico' }, actionIcon(i)),
-        h('span', { class: 'nv-sum' }, h('span', { class: 'nv-printed' }, i.text || ''), explainEl(i, { glossary: gloss, warn: false, terms: false, size: 'sm' })),
+        h('span', { class: 'nv-sum' }, zk.zoneStart ? h('span', { class: `nv-chip nv-chip-${zone}` }, ZONE_LABEL[zone] || zone.toUpperCase()) : null, h('span', { class: 'nv-printed' }, i.text || ''), explainEl(i, { glossary: gloss, warn: false, terms: false, size: 'sm' })),
         h('span', { class: 'nv-pt' }, t && t.T_arrive != null ? fmtTod(t.T_arrive, U()) : ''));
       rows.set(i.n, row); E.list.appendChild(row);
     }
@@ -325,5 +358,5 @@ export function mountNavigator(container, { instructions = [], table = [], unit 
   function destroy() { root.remove(); }
 
   buildRows(); syncOff();
-  return { update, setRoute, setLog, toast, setMode, destroy };
+  return { update, setRoute, setLog, toast, setMode, destroy, grip: dragHandle };
 }

@@ -6,6 +6,7 @@ export function decodeMap(doc) {
   const [s, w, n, e] = doc.bbox, lat0 = (s + n) / 2, lon0 = (w + e) / 2, q = doc.q;
   const kx = 111320 * Math.cos(lat0 * Math.PI / 180), ky = 110540;
   const toLocal = (lat, lon) => [(lon - lon0) * kx, (lat - lat0) * ky];
+  const toLatLon = (x, y) => [y / ky + lat0, x / kx + lon0];
   const roads = doc.roads.map(([c, label, alts, flat]) => {
     const xy = new Float32Array(flat.length);
     let a = 0, o = 0, x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -35,7 +36,7 @@ export function decodeMap(doc) {
     return out;
   };
   const inside = (lat, lon) => lat >= s && lat <= n && lon >= w && lon <= e;
-  return { roads, bridges, toLocal, query, inside, attribution: doc.attribution };
+  return { roads, bridges, toLocal, toLatLon, query, inside, attribution: doc.attribution };
 }
 
 // One spelling for a road name or route number, so "TR 404", "T-404" and "Township Road 404" match, and

@@ -27,6 +27,7 @@
  "js/core/speed.js",
  "js/core/timing.js",
  "js/core/turns.js",
+ "js/core/zones.js",
  "js/main.js",
  "js/sensors/gps.js",
  "js/sensors/racebox.js",

@@ -8,6 +8,7 @@ import { buildSchedule, recommendTA, carStartTod, richtaLadder, taPresses, resta
 import { targetSpeed, capFor, SpeedAnnouncer, LimitTracker } from '../core/speed.js';
 import { buildDelays, plannedOffsetFn, slowdownLossS } from '../core/plan.js';
 import { fmtTod, zoneEdge, parseTod } from '../core/instruction.js';
+import { zoneKinds } from '../core/zones.js';
 import { instructionPhrase, spokenDistance } from './voice.js';
 
 const wrap180 = (d) => ((d + 540) % 360) - 180;
@@ -96,6 +97,8 @@ export class LiveLoop {
     if (this.zoneRally) ins = ins.map(zoneTimingOnly);
     this.schedule = buildSchedule(ins, { startTod: carStartTod(st.baseStart, st.carNumber), carNumber: st.carNumber, marks: this.ev.marks, live: this.ev });
     const rows = this.schedule.rows;
+    const zk = zoneKinds(rows, this.schedule);   // r.zk: the step's zone (timed, transit, rest, untimed) and CAST, for the list
+    for (const r of rows) r.zk = zk.get(r.n);
     if (!this.progress) this.progress = new RouteProgress(rows); else this.progress.setRows(rows);
     const castAt = (D) => this.schedule.castAt(D);
     const capAt = (D) => capFor({ castMph: castAt(D), limitMph: null, defaultLimit: st.defaultLimit });
