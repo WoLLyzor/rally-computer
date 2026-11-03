@@ -14,6 +14,7 @@ import { RallyClock } from './app/clock.js';
 import { Voice } from './app/voice.js';
 import { LiveLoop } from './app/live.js';
 import { segmentTable, buildSchedule } from './core/timing.js';
+import { LOCK_V } from './core/routelock.js';
 import { renderTimes } from './ui/times.js';
 import { prepareImage } from './app/image.js';
 import { RaceBox } from './sensors/racebox.js';
@@ -119,7 +120,7 @@ async function lockRouteNow(at = null, round = 0) {
   const nearXY = near ? { x: near[0], y: near[1] } : null;
   const st = findStart(graph, rows[0]?.text, nearXY) ?? findStart(graph, rows[1]?.text, nearXY);
   const starts = st ? [st] : nearXY ? startsAt(graph, nearXY.x, nearXY.y, fix.heading ?? null) : [];
-  const lock = starts.length ? lockRoute(graph, rows, starts) : null;
+  const lock = starts.length ? lockRoute(graph, rows, starts, { pins: S.route?.lockPins || null }) : null;
   if (S.route?.savedAt !== savedAt) return;   // changed meanwhile: a newer lock is coming
   S.route.lock = lock ? serializeLock(lock, rows, map) : { v: 1, at: Date.now(), error: starts.length ? 'none' : 'start' };
   store.set('route', S.route);
@@ -146,6 +147,51 @@ async function growArea(lock, map, at, round) {
   S.status.area = areaText();
   resetMap();
   await lockRouteNow(at, round + 1);
+}
+// A turn set by hand (a candidate tapped on the Verify screen) or by Claude: the lock makes it at that junction.
+function pinTurn(n, c, by, reason = null) {
+  S.route.lockPins = { ...(S.route.lockPins || {}), [n]: { lat: c.lat, lon: c.lon, onto: c.road, by, reason } };
+  store.set('route', S.route);
+  live?.jot('pin', { n, by, choice: c.id, onto: c.road });
+  lockRouteNow().catch((e) => console.warn('route lock', e));
+}
+// The fix a misread flagged line needs, as the map has it: the other direction, or the map's mileage. Or null.
+function fixLine(f) {
+  const r = S.route?.instructions?.find((x) => x.n === f.n);
+  if (!r) return null;
+  const edit = (patch) => { live?.jot('fix-line', { n: f.n, ...patch }); setRoute(S.route.instructions.map((x) => (x.n === f.n ? { ...x, ...patch, verified: false } : x))); S.view?.update?.({ instructions: S.route.instructions, flags: checksFor(S.route.instructions) }); };
+  if (f.relaxed === 'direction' && f.dir) return { label: `Make #${f.n} a ${/R/.test(f.dir) ? 'right' : 'left'} turn (as the map has it)`, apply: () => edit({ dir: f.dir }) };
+  if (f.relaxed === 'mileage' && Number.isFinite(f.err_m) && Number.isFinite(r.om)) {
+    const om = Math.round((r.om + f.err_m / 1609.344) * 100) / 100;
+    return { label: `Set #${f.n}'s mileage to ${om.toFixed(2)} (as the map has it)`, apply: () => edit({ om }) };
+  }
+  return null;
+}
+function clearPins() { S.route.lockPins = {}; S.route.claudeCheck = null; store.set('route', S.route); lockRouteNow().catch((e) => console.warn('route lock', e)); }
+// Claude checks each flagged turn with the map tools (core/routecheck.js) and its picks are pinned. Sends the
+// instructions to the cloud: only with the rallymaster's written OK, as for cloud reading.
+async function askClaude(onStatus = () => {}) {
+  const lk = S.route?.lock, flagged = lk?.flagged || [];
+  if (!flagged.length || !S.settings.apiKey) return;
+  const { graph } = await mapGraph();
+  const { mapTools, checkTurn } = await import('./core/routecheck.js');
+  const { default: Anthropic } = await import('../vendor/anthropic-sdk.mjs');
+  const client = new Anthropic({ apiKey: S.settings.apiKey, dangerouslyAllowBrowser: true, maxRetries: 4 });
+  const rows = buildSchedule(S.route.instructions, { startTod: 0 }).rows, turns = lk.rows.filter((r) => r.turn), results = [];
+  for (const f of flagged) {
+    onStatus(`Asking Claude about #${f.n}…`);
+    const prev = turns.filter((t) => t.n < f.n).at(-1) ?? lk.rows[0];
+    try {
+      const r = await checkTurn(client, { flag: f, rows, digest: S.route.digest, tools: mapTools(graph, f.choices || [], prev), model: S.settings.modelA || 'claude-opus-5-5' });
+      const c = (f.choices || []).find((x) => x.id === r.choice);
+      results.push(`#${f.n}: ${c ? `onto ${c.road ?? 'a road with no name'}` : 'not sure'}. ${r.reason}`);
+      if (c) S.route.lockPins = { ...(S.route.lockPins || {}), [f.n]: { lat: c.lat, lon: c.lon, onto: c.road, by: 'claude', reason: r.reason } };
+      live?.jot('claude-check', { n: f.n, choice: r.choice, reason: r.reason });
+    } catch (e) { results.push(`#${f.n}: couldn't ask (${e.message || e})`); }
+  }
+  S.route.claudeCheck = results;
+  store.set('route', S.route);
+  await lockRouteNow();
 }
 // The rally area map: what the route lock and the Drive map use (Settings → Map for the rally area).
 function areaText() {
@@ -333,9 +379,28 @@ function showVerify() {
       return;
     }
     if (lk.error) { lockBox.append(h('b', {}, 'Route on the map: '), 'it couldn’t be followed from the start. Check the first lines.'); return; }
-    const flagged = lk.flagged || [];
+    const flagged = lk.flagged || [], pins = S.route?.lockPins || {};
     lockBox.append(h('b', {}, 'Route on the map: '), `every step placed (${lk.rows.length}), turns ${lk.rows.filter((r) => r.turn).length}. `,
-      flagged.length ? h('span', { class: 'flag watch' }, `Check ${flagged.length}: ${flagged.map((f) => `#${f.n} (${f.why})`).join('; ')}`) : h('span', {}, 'Every turn fits its mileage, direction and road name.'));
+      flagged.length ? h('span', { class: 'flag watch' }, `${flagged.length} to settle:`) : h('span', {}, 'Every turn fits its mileage, direction and road name.'));
+    // Each flagged turn's choices: tap the right one (by the paper and the map above), or let Claude look.
+    const off = (m) => `${Math.round(Math.abs(m) * 3.281)} ft ${m >= 0 ? 'past' : 'before'} its mileage`;
+    for (const f of flagged) {
+      lockBox.append(h('div', { class: 'lock-flag' }, h('b', {}, `#${f.n}`), ` ${f.why}. Which junction? `,
+        ...(f.choices || []).map((c) => h('button', { class: c.chosen ? 'btn-info' : '', onclick: () => pinTurn(f.n, c, 'crew') },
+          `${c.id}: ${c.angle > 20 ? 'right' : c.angle < -20 ? 'left' : 'ahead'} onto ${c.road ?? 'no-name road'}, ${off(c.err_m)}${c.chosen ? ' (now)' : ''}`)),
+        // A misread line (the map only fits the other way, or another mileage): fix the line itself, once the paper agrees.
+        ...(fixLine(f) ? [h('button', { class: 'btn-info', onclick: () => fixLine(f).apply() }, fixLine(f).label)] : [])));
+    }
+    if (flagged.length) {
+      const canAsk = S.settings.profile === 'cloud' && !!S.settings.apiKey;
+      const note = h('span', { class: 'muted' }, '');
+      lockBox.append(canAsk ? h('div', { class: 'row' }, h('button', { class: 'btn-info', onclick: () => { live?.jot('ui', { what: 'button', label: 'Ask Claude' }); askClaude((t) => { note.textContent = t; }).catch((e) => { note.textContent = `Couldn't ask Claude: ${e.message || e}`; }); } },
+        `Ask Claude to check ${flagged.length === 1 ? 'it' : `these ${flagged.length}`}`), note)
+        : h('p', { class: 'muted' }, 'Claude can check these with the map: Settings → Cloud reading and your API key, only with the rallymaster’s written OK.'));
+    }
+    const pinned = Object.entries(pins);
+    if (pinned.length) lockBox.append(h('div', { class: 'muted' }, `Set by hand or by Claude: ${pinned.map(([n, p]) => `#${n}${p.by === 'claude' ? ' (Claude)' : ''}`).join(', ')}. `, h('button', { onclick: clearPins }, 'Clear them')));
+    if (S.route?.claudeCheck?.length) lockBox.append(h('div', { class: 'muted' }, ...S.route.claudeCheck.map((t) => h('div', {}, `Claude: ${t}`))));
   };
   // The whole route on the map as locked: every turn numbered, the ones to check in amber. Tap one to go to its line.
   const mapBox = h('div', { class: 'rm-wrap', hidden: true }); app.append(mapBox);
@@ -369,7 +434,7 @@ function showVerify() {
     onDone: () => { location.hash = '#home'; },
   });
   S.view.lockInfo = lockInfo;
-  if (!S.route?.lock && S.route?.instructions?.length) scheduleLock();
+  if ((!S.route?.lock || S.route.lock.v !== LOCK_V) && S.route?.instructions?.length) scheduleLock();   // none yet, or an older kind
 }
 
 function showSettings() {

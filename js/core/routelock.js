@@ -16,6 +16,7 @@ import { branches, walk, traverse, plen, forks, turnCandidates, turnName, arrive
 import { roadKey, roadKeys, nearestRoad } from './mapview.js';
 
 const M_PER_MI = 1609.344;
+export const LOCK_V = 2;   // the stored lock's shape: an older one is worked out again (2: flagged turns' choices and misreads)
 const BEAM = 8;          // lines kept after each turn
 const PER_TURN = 4;      // junctions tried per line at each turn
 const MIN_SCORE = 0.12;  // as routeproj: a junction scoring lower doesn't count as the turn
@@ -23,6 +24,7 @@ const WIDE = 0.6;        // found only out to twice the window
 const MISS = 0.03;       // a turn no junction fits: the line goes on along the main road, trusted much less
 const FLAG_SCORE = 0.5;  // a turn scoring under this is flagged
 const RIVAL = Math.log(4);   // another line within this (log score) that turns elsewhere flags the turn
+const RELAX_MILES = 0.25, RELAX_DIR = 0.15;   // a turn found only with its mileage, or direction, taken as misread
 
 const LEAD = /^(?:AT\s+THE\s+END\s+OF|END\s+OF|FROM|ON|AT|BEGIN\s+AT|START\s+AT|START\s+ON)\s+/;
 const DIRS = { R: 'R', RIGHT: 'R', L: 'L', LEFT: 'L', BR: 'BR', BL: 'BL', S: 'S', SO: 'S', STRAIGHT: 'S' };
@@ -101,7 +103,9 @@ function cutAtS(P, s) {   // the path up to distance s (kept for callers placing
 
 // rows: schedule rows (D: official miles from the start, cumulative across odometer resets).
 // starts: [{ c, P }] (findStart, or startsAt for both ways along the road). Returns null without a start.
-export function lockRoute(g, rows, starts, { beam = BEAM, startD = 0 } = {}) {
+// pins: { n: { lat, lon, onto } } the crew (or Claude) chose for a turn: only junctions within 30 m of it, onto a
+// road of that name when one is given, can make that turn.
+export function lockRoute(g, rows, starts, { beam = BEAM, startD = 0, pins = null } = {}) {
   if (!starts?.length) return null;
   const turns = rows.filter((r) => r.action === 'turn' && r.dir && r.dir !== 'U' && Number.isFinite(r.D) && r.D > startD - 1e-9);
   let lines = starts.map((st) => ({ c: st.c, P: st.P, legs: [], S: 0, anchorD: startD, logp: 0, steps: [], odoS: 0, odoD: 0 }));
@@ -114,18 +118,38 @@ export function lockRoute(g, rows, starts, { beam = BEAM, startD = 0 } = {}) {
       const E = Math.max(0, (row.D - L.anchorD) * M_PER_MI * scale), W = Math.max(60, 0.04 * E);
       const Pw = copyP(L.P);
       const steps = walk(g, Pw, L.c, E + 2 * W);
-      let cands = turnCandidates(g, steps, row, E, W, Infinity), wide = false;
-      if (!cands.some((c) => c.score >= MIN_SCORE)) { cands = turnCandidates(g, steps, row, E, 2 * W, Infinity); wide = true; }
+      let cands = turnCandidates(g, steps, row, E, W, Infinity).map((c) => ({ ...c, steps, Pw })), wide = false;
+      if (!cands.some((c) => c.score >= MIN_SCORE)) { cands = turnCandidates(g, steps, row, E, 2 * W, Infinity).map((c) => ({ ...c, steps, Pw })); wide = true; }
+      if (!cands.some((c) => c.score >= MIN_SCORE)) {
+        // Nothing near its mileage: a misread mileage (further off) or direction (L for R) is likelier than the
+        // route going on straight, and losing it would spoil every turn after. Flagged for the crew to check.
+        const RW = Math.max(500, 0.25 * E), Pr = copyP(L.P), far = walk(g, Pr, L.c, E + RW);
+        cands = turnCandidates(g, far, row, E, RW, Infinity).map((c) => ({ ...c, steps: far, Pw: Pr, score: c.score * RELAX_MILES, relaxed: 'mileage' }));
+        const flip = { L: 'R', R: 'L', BL: 'BR', BR: 'BL' }[row.dir];
+        if (flip) cands.push(...turnCandidates(g, far, { ...row, dir: flip }, E, RW, Infinity).map((c) => ({ ...c, steps: far, Pw: Pr, score: c.score * RELAX_DIR, relaxed: 'direction', dir: flip })));
+      }
       if (cands.some((c) => c.exact)) for (const c of cands) if (c.unnamed) c.score *= 0.7;
-      cands = cands.filter((c) => c.score >= MIN_SCORE).sort((p, q) => q.score - p.score).slice(0, PER_TURN);
+      cands = cands.filter((c) => c.score >= MIN_SCORE * (c.relaxed ? RELAX_DIR : 1)).sort((p, q) => q.score - p.score);
+      const pin = pins?.[row.n], pinXY = pin && g.map.toLocal ? g.map.toLocal(pin.lat, pin.lon) : null;
+      if (pinXY) {   // a pinned turn: that junction (and road) or nothing
+        const ok = (c) => Math.hypot(g.vx[c.v] - pinXY[0], g.vy[c.v] - pinXY[1]) <= 30 && (!pin.onto || roadKeys(roads[c.b.road]).includes(roadKey(pin.onto)));
+        const keep = cands.filter(ok);
+        if (keep.length) cands = keep.map((c) => ({ ...c, score: Math.max(c.score, 0.95) }));   // the crew's choice is sure
+      }
+      cands = cands.slice(0, PER_TURN);
+      // The junctions this line weighed for the turn: for the crew (or Claude) to choose from when it's flagged.
+      const alts = cands.map((c) => ({ v: c.v, x: g.vx[c.v], y: g.vy[c.v], road: roads[c.b.road].name || null, angle: Math.round(c.b.a), err: Math.round(c.steps[c.j].s - E), score: Math.round(c.score * 100) / 100 }));
       const { key } = turnName(row);
       for (const cd of cands) {
-        const st = steps[cd.j], score = cd.score * forks(steps, cd.j) * (wide ? WIDE : 1);
+        const st = cd.steps[cd.j], score = cd.score * forks(cd.steps, cd.j) * (wide && !cd.relaxed ? WIDE : 1);
         const P2 = { pts: [[g.vx[st.v], g.vy[st.v]]], cum: [0] };
         const c2 = traverse(g, P2, cd.b.road, cd.b.fwd, key ? [key] : []);
-        next.push({ c: c2, P: P2, legs: [...L.legs, cutTo(Pw, st.n)], S: L.S + st.s, anchorD: row.D, logp: L.logp + Math.log(score),
-          odoS: L.odoS + st.s, odoD: L.odoD + (row.D - L.anchorD),
-          steps: [...L.steps, { n: row.n, D: row.D, s: L.S + st.s, x: g.vx[st.v], y: g.vy[st.v], v: st.v, score, wide, road: roads[cd.b.road].name || null, angle: Math.round(cd.b.a) }] });
+        // A misread mileage: the next leg is measured from where the map says this turn is, not from the misread
+        // number (which would put every turn after it off too); and the leg doesn't count toward the odometer factor.
+        const misread = cd.relaxed === 'mileage', at = misread ? L.anchorD + st.s / (M_PER_MI * scale) : row.D;
+        next.push({ c: c2, P: P2, legs: [...L.legs, cutTo(cd.Pw, st.n)], S: L.S + st.s, anchorD: at, logp: L.logp + Math.log(score),
+          odoS: L.odoS + (misread ? 0 : st.s), odoD: L.odoD + (misread ? 0 : row.D - L.anchorD),
+          steps: [...L.steps, { n: row.n, D: row.D, s: L.S + st.s, x: g.vx[st.v], y: g.vy[st.v], v: st.v, score, wide, road: roads[cd.b.road].name || null, angle: Math.round(cd.b.a), alts, pinned: !!pinXY, relaxed: cd.relaxed ?? null, err: Math.round(st.s - E), dir: cd.dir ?? row.dir }] });
       }
       if (!cands.length && steps.length) {   // nothing fits: on along the main road to about its mileage, the turn not made
         let j = 0;
@@ -150,7 +174,10 @@ export function lockRoute(g, rows, starts, { beam = BEAM, startD = 0 } = {}) {
   const rival = lines.find((L) => L !== best && best.logp - L.logp < RIVAL);
   const steps = best.steps.map((st, i) => {
     const r = rival?.steps[i], away = r && (r.v !== st.v || (r.v === null && Math.hypot(r.x - st.x, r.y - st.y) > 30));
-    const why = st.miss ? 'no junction fits this turn near its mileage' : st.score < FLAG_SCORE ? `weak fit (${Math.round(st.score * 100)}%)` : away ? 'another route about as good turns elsewhere' : null;
+    const why = st.pinned ? null : st.miss ? 'no junction fits this turn near its mileage'
+      : st.relaxed === 'mileage' ? `the map's turn is ${Math.round(Math.abs(st.err) * 3.281)} ft ${st.err >= 0 ? 'past' : 'before'} its mileage: check the instruction's mileage`
+        : st.relaxed === 'direction' ? `the map only has a ${st.dir === 'R' || st.dir === 'BR' ? 'right' : 'left'} turn here: check the instruction's direction`
+          : st.score < FLAG_SCORE ? `weak fit (${Math.round(st.score * 100)}%)` : away ? 'another route about as good turns elsewhere' : null;
     return { ...st, flag: !!why, why };
   });
   // The whole path: the legs, then a short way on past the last turn.
@@ -203,6 +230,8 @@ export function serializeLock(lock, rows, map) {
     const [lat, lon] = map.toLatLon(...pointAt(lock.path, s)), t = byN.get(n);
     return { n, D: byRow.get(n).D, s: r1(s), lat: r6(lat), lon: r6(lon), ...(t ? { turn: true, score: Math.round(t.score * 100) / 100, road: t.road, flag: t.flag, why: t.why } : {}) };
   });
-  return { v: 1, at: Date.now(), scale: lock.scale, conf: lock.conf, rows: at, flagged: lock.steps.filter((s) => s.flag).map((s) => ({ n: s.n, why: s.why })),
+  const choice = (s) => (s.alts || []).map((a, i) => { const [lat, lon] = map.toLatLon(a.x, a.y); return { id: String.fromCharCode(97 + i), lat: r6(lat), lon: r6(lon), road: a.road, angle: a.angle, err_m: a.err, score: a.score, chosen: a.v === s.v }; });
+  return { v: LOCK_V, at: Date.now(), scale: lock.scale, conf: lock.conf, rows: at, flagged: lock.steps.filter((s) => s.flag).map((s) => ({ n: s.n, why: s.why, choices: choice(s), relaxed: s.relaxed ?? null, dir: s.dir ?? null, err_m: s.err ?? null })),
+    pinned: lock.steps.filter((s) => s.pinned).map((s) => s.n),
     path: { ll: lock.path.pts.map(([x, y]) => map.toLatLon(x, y).map(r6)), cum: lock.path.cum.map(r1) } };
 }
