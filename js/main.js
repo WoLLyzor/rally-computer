@@ -5,7 +5,7 @@ import { mountVerify } from './ui/verify.js';
 import { mountSettings } from './ui/settings.js';
 import { mountDriver } from './ui/driver.js';
 import { mountNavigator } from './ui/navigator.js';
-import { mountMap, mapGraph } from './ui/map.js';
+import { mountMap, mapGraph, loadMap, resetMap } from './ui/map.js';
 import { parseText, reparse } from './core/parser.js';
 import { runChecks, computeLegs, assignSections, normalizeInstruction, fmtTod, zoneEdge } from './core/instruction.js';
 import { extractPages, buildDigest } from './core/extract.js';
@@ -108,7 +108,7 @@ function setRoute(instructions, extra = {}) {
 // when the first line's words don't name the start.
 let lockTimer = null;
 function scheduleLock(at = null) { clearTimeout(lockTimer); lockTimer = setTimeout(() => lockRouteNow(at).catch((e) => console.warn('route lock', e)), 400); }
-async function lockRouteNow(at = null) {
+async function lockRouteNow(at = null, round = 0) {
   const ins = S.route?.instructions, savedAt = S.route?.savedAt;
   if (!ins?.length) return;
   const { map, graph } = await mapGraph();
@@ -126,6 +126,44 @@ async function lockRouteNow(at = null) {
   live?.jot('lock', { ok: !!lock, flagged: S.route.lock.flagged?.length ?? null, error: S.route.lock.error ?? null });
   live?.setLock(S.route.lock);
   S.view?.lockInfo?.(S.route.lock);
+  if (lock && round < 2) growArea(lock, map, at, round).catch((e) => console.warn('area', e));
+}
+// A downloaded area the locked route runs within 1.5 km of the edge of: the tiles beyond it, then lock again.
+async function growArea(lock, map, at, round) {
+  const area = store.get('area', null);
+  if (!area?.tiles?.length || navigator.onLine === false) return;
+  const { tileId } = await import('./core/osmroads.js'), have = new Set(area.tiles), need = new Set();
+  const pts = lock.path.pts;
+  for (let i = 0; i < pts.length; i += Math.max(1, Math.floor(pts.length / 400))) {
+    const [lat, lon] = map.toLatLon(pts[i][0], pts[i][1]);
+    for (const [da, dl] of [[0, 0], [0.0135, 0], [-0.0135, 0], [0, 0.018], [0, -0.018]]) { const t = tileId(lat + da, lon + dl); if (!have.has(t)) need.add(t); }
+  }
+  if (!need.size) return;
+  const { ensureTiles } = await import('./app/osmarea.js');
+  S.status.area = `The route runs past the downloaded area: getting ${need.size} more tiles…`;
+  await ensureTiles([...need], (d, t) => { S.status.area = `The route runs past the downloaded area: ${d} of ${t} more tiles…`; });
+  store.set('area', { ...area, tiles: [...have, ...need] });
+  S.status.area = areaText();
+  resetMap();
+  await lockRouteNow(at, round + 1);
+}
+// The rally area map: what the route lock and the Drive map use (Settings → Map for the rally area).
+function areaText() {
+  const a = store.get('area', null);
+  return a?.tiles?.length ? `Downloaded: the roads around ${a.name} (${a.tiles.length} tiles of about 11 × 8 km).` : 'Built in: Ashtabula to Erie only.';
+}
+async function downloadArea(lat, lon, name) {
+  const { areaTiles, ensureTiles } = await import('./app/osmarea.js');
+  const tiles = areaTiles(lat, lon);
+  live?.jot('area', { name, tiles: tiles.length });
+  S.status.area = `Downloading the roads around ${name}: 0 of ${tiles.length} tiles (keep this screen open)…`;
+  try {
+    await ensureTiles(tiles, (d, t) => { S.status.area = `Downloading the roads around ${name}: ${d} of ${t} tiles (keep this screen open)…`; });
+    store.set('area', { tiles, name, lat, lon, at: Date.now() });
+    resetMap(); await loadMap();
+    S.status.area = areaText();
+    if (S.route?.instructions?.length) scheduleLock();
+  } catch (e) { S.status.area = `Download stopped (${e.message || e}). Tap again to go on: tiles already down are kept.`; }
 }
 // GET ME BACK ON COURSE: the shortest roads from the car back to where it left the locked route (core/recover.js);
 // the live loop turns it into the speed that gets there on time. Planned again every 15 s while off the route.
@@ -290,7 +328,7 @@ function showVerify() {
     clear(lockBox);
     if (!lk) { lockBox.append(h('b', {}, 'Route on the map: '), 'working it out…'); return; }
     if (lk.error === 'start') {
-      lockBox.append(h('b', {}, 'Route on the map: '), 'the first line doesn’t say where the route starts in a way the map can find. At the start, tap ',
+      lockBox.append(h('b', {}, 'Route on the map: '), 'the start isn’t found on the tablet’s map. If the rally isn’t around Ashtabula–Erie, download its area first: Settings → Map for the rally area. At the start, tap ',
         h('button', { onclick: () => { live?.jot('ui', { what: 'button', label: 'Lock here' }); lockRouteNow(live?.lastFix ?? null); } }, 'Lock route here'), ' (uses this tablet’s GPS position).');
       return;
     }
@@ -299,7 +337,20 @@ function showVerify() {
     lockBox.append(h('b', {}, 'Route on the map: '), `every step placed (${lk.rows.length}), turns ${lk.rows.filter((r) => r.turn).length}. `,
       flagged.length ? h('span', { class: 'flag watch' }, `Check ${flagged.length}: ${flagged.map((f) => `#${f.n} (${f.why})`).join('; ')}`) : h('span', {}, 'Every turn fits its mileage, direction and road name.'));
   };
-  renderLock(S.route?.lock ?? null);
+  // The whole route on the map as locked: every turn numbered, the ones to check in amber. Tap one to go to its line.
+  const mapBox = h('div', { class: 'rm-wrap', hidden: true }); app.append(mapBox);
+  let routeMap = null;
+  const showRouteMap = async (lk) => {
+    mapBox.hidden = !lk || !!lk.error;
+    if (mapBox.hidden) return;
+    const { map } = await mapGraph().catch(() => ({ map: null }));
+    const { mountRouteMap } = await import('./ui/routemap.js');
+    const onStep = (n) => document.querySelector(`.card[data-n="${n}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (!routeMap) routeMap = mountRouteMap(mapBox, { lock: lk, instructions: S.route?.instructions || [], map, onStep });
+    else routeMap.update(lk);
+  };
+  const lockInfo = (lk) => { renderLock(lk); showRouteMap(lk).catch((e) => console.warn('route map', e)); };
+  lockInfo(S.route?.lock ?? null);
   const box = h('div', {}); app.append(box);
   const ins = S.route?.instructions || [];
   S.view = mountVerify(box, {
@@ -317,12 +368,13 @@ function showVerify() {
     },
     onDone: () => { location.hash = '#home'; },
   });
-  S.view.lockInfo = renderLock;
+  S.view.lockInfo = lockInfo;
   if (!S.route?.lock && S.route?.instructions?.length) scheduleLock();
 }
 
 function showSettings() {
   app.append(topbar('Settings'));
+  S.status.area ??= areaText();
   const box = h('div', {}); app.append(box);
   S.view = mountSettings(box, {
     settings: S.settings, status: S.status,
@@ -338,6 +390,21 @@ function showSettings() {
       connectRaceBox, connectObd: () => alert('OBD is not wired in this version (RaceBox + tablet GPS are).'),
       testVoice: () => voice.speak('In 500 yards, turn right at the T onto Smith Road. Drive 44. 3 seconds late.'),
       testMark: () => alert(`Press the Bluetooth button now; last key seen: ${S.status.lastKey || 'none'}`),
+      areaHere: () => {
+        const f = live?.lastFix;
+        if (f) { downloadArea(f.lat, f.lon, 'here'); return; }
+        S.status.area = 'Finding where the tablet is…';
+        navigator.geolocation?.getCurrentPosition((p) => downloadArea(p.coords.latitude, p.coords.longitude, 'here'), () => { S.status.area = 'No position: allow location, or type the town.'; }, { enableHighAccuracy: true, timeout: 20000 });
+      },
+      areaPlace: async (q) => {
+        if (!q?.trim()) return;
+        S.status.area = `Looking up ${q.trim()}…`;
+        const { findPlace } = await import('./app/osmarea.js');
+        const p = await findPlace(q.trim()).catch(() => null);
+        if (!p) { S.status.area = `Couldn't find ${q.trim()}. Try the town and state.`; return; }
+        downloadArea(p.lat, p.lon, q.trim());
+      },
+      areaClear: () => { store.set('area', null); resetMap(); S.status.area = areaText(); if (S.route?.instructions?.length) scheduleLock(); },
     },
   });
   S.timer = setInterval(() => S.view?.update?.({ settings: S.settings, status: { ...S.status } }), 1000);

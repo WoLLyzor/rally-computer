@@ -114,6 +114,7 @@ export class LiveLoop {
   setLock(lock) {
     this.tracker = lock && !lock.error && lock.path?.ll?.length > 1 && lock.rows?.length ? new RouteTracker(lock) : null;
     this.lockLL = this.tracker ? lock.path.ll : null;
+    this.lockTurns = this.tracker ? lock.rows.filter((r) => r.turn).map((r) => ({ n: r.n, lat: r.lat, lon: r.lon, s: r.s })) : null;   // the map numbers them
     this.offRoute = null; this.trackOff = null; this.recovery = null; this.lastTrackT = null; this.lockLost = false;
   }
   trackFix(t, lat, lon, speed, heading) {

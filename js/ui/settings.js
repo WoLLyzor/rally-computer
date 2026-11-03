@@ -6,6 +6,7 @@ export function mountSettings(container, opts) {
   let settings = { ...(opts.settings || {}) };
   let status = { ...(opts.status || {}) };
   let showKey = false;
+  let areaQuery = '';   // the town typed for the area map, kept across the screen's redraws
   const root = h('div', { class: 'screen settings' });
   container.appendChild(root);
 
@@ -108,7 +109,22 @@ export function mountSettings(container, opts) {
           h('button', { class: 'btn-info', onclick: act('connectRaceBox') }, 'Connect RaceBox'),
           h('button', { class: 'btn-info', onclick: act('connectObd') }, 'Connect OBD'),
           h('button', { onclick: act('testMark') }, 'Test mark')),
-        line('RaceBox', status.racebox), line('OBD', status.obd), line('GPS', status.gps), line('Last key', status.lastKey)));
+        line('RaceBox', status.racebox), line('OBD', status.obd), line('GPS', status.gps), line('Last key', status.lastKey)),
+      // The roads for the route lock and the Drive map: built in for Ashtabula–Erie; anywhere else, downloaded
+      // from OpenStreetMap (best at home: it can take several minutes).
+      (() => {
+        const place = h('input', { type: 'text', placeholder: 'Town or address of the start', 'aria-label': 'Town or address', value: areaQuery });
+        place.addEventListener('input', () => { areaQuery = place.value; });
+        return h('div', { class: 'panel' },
+          h('h2', null, 'Map for the rally area'),
+          h('p', { class: 'muted' }, 'Built in: Ashtabula to Erie. For a rally anywhere else, download its roads here before the rally, at home on Wi-Fi.'),
+          h('div', { class: 'row', style: { margin: '8px 0' } },
+            h('button', { class: 'btn-info', onclick: act('areaHere') }, 'Download around here (GPS)'),
+            h('button', { onclick: act('areaClear') }, 'Use the built-in map')),
+          h('div', { class: 'row' }, h('div', { class: 'grow' }, place),
+            h('button', { class: 'btn-info', onclick: () => actions.areaPlace?.(areaQuery) }, 'Download around it')),
+          line('Map', status.area));
+      })());
   }
   render();
 

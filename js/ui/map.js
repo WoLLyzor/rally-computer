@@ -4,24 +4,31 @@
 // mountMap(container) -> { update(state, live), destroy() }
 import { h } from './dom.js';
 import { decodeMap, roadKey, roadKeys, nearestRoad } from '../core/mapview.js';
+import { store } from '../app/store.js';
 
 let MAP = null, GRAPH = null, projectRoute = null, LOADING = null;   // decoded once, shared by every mount
+// The map in use: the downloaded rally area (app/osmarea.js, store 'area') when one is set and on the tablet,
+// else the built-in Ashtabula–Erie map.
 export function loadMap(url = 'map/roads.json') {
-  LOADING ??= fetch(url).then((r) => { if (!r.ok) throw new Error(`map ${r.status}`); return r.json(); })
-    .then(async (doc) => {
-      MAP = decodeMap(doc);
-      // The route guess loads on its own: if it fails, the map (and the app) work without it.
-      try { const rp = await import('../core/routeproj.js'); GRAPH = rp.buildGraph(MAP); projectRoute = rp.projectRoute; } catch (e) { console.warn('route guess off', e); }
-      return MAP;
-    })
-    .catch((err) => { LOADING = null; throw err; });
+  LOADING ??= (async () => {
+    const area = store.get('area', null);
+    let doc = null;
+    if (area?.tiles?.length) { try { const { areaDoc } = await import('../app/osmarea.js'); doc = await areaDoc(area.tiles); } catch (e) { console.warn('area map', e); } }
+    if (!doc) { const r = await fetch(url); if (!r.ok) throw new Error(`map ${r.status}`); doc = await r.json(); }
+    MAP = decodeMap(doc);
+    // The route guess loads on its own: if it fails, the map (and the app) work without it.
+    try { const rp = await import('../core/routeproj.js'); GRAPH = rp.buildGraph(MAP); projectRoute = rp.projectRoute; } catch (e) { console.warn('route guess off', e); }
+    return MAP;
+  })().catch((err) => { LOADING = null; throw err; });
   return LOADING;
 }
+// A new area was downloaded or cleared: the next use loads the map again.
+export function resetMap() { LOADING = null; MAP = null; GRAPH = null; }
 // The offline map and its road graph (null graph if the route guess couldn't load), for the route lock.
 export async function mapGraph() { await loadMap(); return { map: MAP, graph: GRAPH }; }
 
 const WIDTH = [7, 6.5, 6, 5.5, 5, 4, 4, 2.2, 1.6];   // line width by road class: motorway … track
-const INK = { bg: '#0e1217', major: '#8b97a4', road: '#5f6a76', minor: '#434b55', label: '#c9d1d9', onto: '#7cc4ff', track: '#3ddc84', bridge: '#f5b942' };
+const INK = { bg: '#0e1217', major: '#8b97a4', road: '#5f6a76', minor: '#434b55', label: '#c9d1d9', onto: '#7cc4ff', track: '#3ddc84', bridge: '#f5b942', trail: '#9aa4ae' };
 
 function halo(ctx, s, x, y, color, align = 'center', px = 15) {
   ctx.font = `700 ${px}px system-ui, sans-serif`; ctx.textAlign = align; ctx.textBaseline = 'middle';
@@ -42,6 +49,9 @@ export function mountMap(container) {
   container.append(root);
   // bias: the crew's zoom on top of the automatic one; rot: the drawn heading, eased toward the car's.
   let bias = 1, mpp = null, last = null, drawnAt = 0, heading = null, rot = null, proj = null, projAt = 0, headingSavedAt = 0, lockXY = null;
+  // Smooth on screen: the drawn centre glides toward the car (predicted between fixes along its heading), and
+  // the turn and the zoom ease in over a fraction of a second; about 20 frames a second while shown.
+  let ren = null, frameAt = null, raf = 0, alive = true, trackXY = { src: null, n: 0, xy: [] };
   // The driver's view at all times: the last course is kept while stopped, even across a restart of the app.
   try { const hs = localStorage.getItem('rc.mapHeading'); if (hs !== null && Number.isFinite(Number(hs))) heading = Number(hs); } catch { /* no storage */ }
 
@@ -78,31 +88,42 @@ export function mountMap(container) {
       }
     } else offSince = null;
   }
-  const zoom = (f) => { bias = Math.max(0.35, Math.min(3, bias * f)); draw(true); };
+  const zoom = (f) => { bias = Math.max(0.35, Math.min(3, bias * f)); };
   loadMap().then(() => draw(true)).catch(() => { status.hidden = false; status.textContent = 'The map isn’t on this tablet yet. Open the app once while online.'; });
 
-  function update(st, live) { last = { st, live }; draw(false); }
+  function update(st, live) { last = { st, live }; if (!raf && alive) raf = requestAnimationFrame(loop); }
+  function loop() {
+    raf = 0;
+    if (!alive || !root.isConnected) return;
+    if (container.offsetParent !== null) draw(false);   // hidden (map off): nothing to draw
+    raf = requestAnimationFrame(loop);
+  }
 
   function draw(force) {
     const now = performance.now();
-    if (!force && now - drawnAt < 200) return;
+    if (!force && now - drawnAt < 45) return;
     drawnAt = now;
+    const dt = frameAt === null ? 1 : Math.min(0.5, (now - frameAt) / 1000);
+    frameAt = now;
+    const ease = (tau) => (force ? 1 : 1 - Math.exp(-dt / tau));
     const st = last?.st, live = last?.live;
     speed.textContent = st?.speed_mph != null ? `${Math.round(st.speed_mph)} mph` : '';
     if (!MAP) return;
     const fix = live?.lastFix;
     if (!fix) { status.hidden = false; status.textContent = 'Waiting for a GPS position…'; return; }
     status.hidden = MAP.inside(fix.lat, fix.lon);
-    if (!status.hidden) status.textContent = 'Outside the map area (Ashtabula to Erie).';
+    if (!status.hidden) status.textContent = store.get('area', null) ? 'Outside the downloaded map area.' : 'Outside the map area (Ashtabula to Erie). Settings → Map for the rally area.';
     // Heading up: the car's course while moving, the last one while stopped (north up only before the first move
     // ever), eased so the map turns smoothly.
     const v = (st?.speed_mph ?? 0) * 0.44704;
-    const hd = live.headings?.[live.headings.length - 1];
-    if (hd && v > 1.5) {
-      heading = hd.h;
+    const hd = live.headings?.[live.headings.length - 1], rb = routeBearing(live);
+    // Up is the way the car goes: the locked route's own direction when on it and slow (steady at a stop sign),
+    // the GPS course when moving, else the last one.
+    if ((rb !== null && v < 4) || (hd && v > 1.5)) {
+      heading = rb !== null && v < 4 ? rb : hd.h;
       if (now - headingSavedAt > 5000) { headingSavedAt = now; try { localStorage.setItem('rc.mapHeading', String(Math.round(heading))); } catch { /* no storage */ } }
     }
-    if (heading !== null) rot = rot === null ? heading : (rot + (((heading - rot) % 360 + 540) % 360 - 180) * (force ? 1 : 0.35) + 360) % 360;
+    if (heading !== null) rot = rot === null ? heading : (rot + (((heading - rot) % 360 + 540) % 360 - 180) * ease(0.35) + 360) % 360;
     const th = (rot ?? 0) * Math.PI / 180, cos = Math.cos(th), sin = Math.sin(th);
 
     const box = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
@@ -112,7 +133,7 @@ export function mountMap(container) {
     const cs = getComputedStyle(document.documentElement), css = (k, d) => cs.getPropertyValue(k).trim() || d;
     Object.assign(INK, { bg: css('--mapbg', INK.bg), major: css('--road-major', INK.major), road: css('--road', INK.road), minor: css('--road-minor', INK.minor),
       label: css('--maplabel', INK.label), onto: css('--info', INK.onto), track: css('--good', INK.track), bridge: css('--watch', INK.bridge), ink: css('--text', '#e8eaed'),
-      route: css('--route', '#ff6bd6') });
+      route: css('--route', '#ff6bd6'), trail: css('--muted', INK.trail) });
     const ctx = canvas.getContext('2d');
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = INK.bg; ctx.fillRect(0, 0, W, H);
@@ -123,8 +144,13 @@ export function mountMap(container) {
     const toNext = st?.next?.to_mi != null && st.next.to_mi > 0 ? st.next.to_mi * 1609.344 : null;
     const ahead = Math.min(2500, Math.max(200, v * 20, toNext !== null ? toNext * 1.25 + 50 : 0));
     const want = Math.max(0.6, ahead / cy * bias);
-    mpp = mpp === null || force ? want : mpp + (want - mpp) * 0.3;
-    const [x0, y0] = MAP.toLocal(fix.lat, fix.lon);
+    mpp = mpp === null || force ? want : mpp + (want - mpp) * ease(0.6);
+    // The car: the last fix, carried on along the heading for the time since it (at most 1.2 s), then eased.
+    const [fx, fy] = MAP.toLocal(fix.lat, fix.lon), lead = Number.isFinite(fix.t) ? Math.max(0, Math.min(1.2, now / 1000 - fix.t)) : 0;
+    const hr = (hd?.h ?? heading ?? 0) * Math.PI / 180, tx = fx + v * lead * Math.sin(hr), ty = fy + v * lead * Math.cos(hr);
+    if (!ren || force || Math.hypot(tx - ren[0], ty - ren[1]) > 250) ren = [tx, ty];
+    else { const f = ease(0.12); ren = [ren[0] + (tx - ren[0]) * f, ren[1] + (ty - ren[1]) * f]; }
+    const [x0, y0] = ren;
     const sx = (x, y) => cx + ((x - x0) * cos - (y - y0) * sin) / mpp;
     const sy = (x, y) => cy - ((x - x0) * sin + (y - y0) * cos) / mpp;
     const R = Math.hypot(W, H) * mpp;
@@ -148,8 +174,8 @@ export function mountMap(container) {
       ctx.lineWidth = WIDTH[c] * k;
       ctx.stroke();
     }
-    // The road the next instruction turns onto.
-    if (ontoKey) {
+    // The road the next instruction turns onto (the locked route shows the turn itself).
+    if (ontoKey && !live.lockLL) {
       ctx.beginPath();
       let any = false;
       for (const rd of vis) if (roadKeys(rd).includes(ontoKey)) { path(rd); any = true; }
@@ -162,11 +188,33 @@ export function mountMap(container) {
     if (live.lockLL) {
       if (lockXY?.ll !== live.lockLL) lockXY = { ll: live.lockLL, xy: live.lockLL.map(([la, lo]) => MAP.toLocal(la, lo)) };
       const cum = live.tracker?.cum, sCar = live.tracker?.s ?? null, xy = lockXY.xy;
-      const line = (from, to) => { ctx.beginPath(); for (let j = from; j <= to; j++) { const [x, y] = xy[j]; if (j === from) ctx.moveTo(sx(x, y), sy(x, y)); else ctx.lineTo(sx(x, y), sy(x, y)); } };
       let cut = 0;
       if (sCar !== null && cum) while (cut + 1 < cum.length && cum[cut + 1] <= sCar) cut++;
-      if (cut > 0) { line(0, cut); ctx.strokeStyle = INK.route; ctx.lineWidth = 4 * k + 1; ctx.globalAlpha = 0.35; ctx.stroke(); }
-      line(cut, xy.length - 1); ctx.strokeStyle = INK.route; ctx.lineWidth = 6 * k + 2; ctx.globalAlpha = 0.9; ctx.stroke(); ctx.globalAlpha = 1;
+      // Where you're going: from the car on, thick pink with white chevrons pointing the way (in view only).
+      const pts = [];
+      for (let j = cut; j < xy.length; j++) {
+        const [x, y] = xy[j];
+        pts.push([sx(x, y), sy(x, y)]);
+        if (Math.hypot(x - x0, y - y0) > R * 1.5 && pts.length > 2) break;
+      }
+      if (sCar !== null && !live.offRoute && pts.length) pts[0] = [cx, cy];   // from the car itself
+      if (pts.length > 1) {
+        ctx.beginPath(); pts.forEach(([X, Y], i) => (i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y)));
+        ctx.strokeStyle = INK.bg; ctx.lineWidth = 9 * k + 6; ctx.globalAlpha = 0.6; ctx.stroke();
+        ctx.strokeStyle = INK.route; ctx.lineWidth = 9 * k + 2; ctx.globalAlpha = 1; ctx.stroke();
+        chevrons(ctx, pts, 70, Math.max(5, 5 * k), INK.bg);
+      }
+      // The next turns on it, numbered.
+      let shown = 0;
+      for (const t of live.lockTurns || []) {
+        if (sCar !== null && t.s < sCar - 5) continue;
+        if (shown++ >= 3) break;
+        const [x, y] = MAP.toLocal(t.lat, t.lon), X = sx(x, y), Y = sy(x, y);
+        ctx.beginPath(); ctx.arc(X, Y, 15, 0, 2 * Math.PI); ctx.fillStyle = INK.route; ctx.fill();
+        ctx.lineWidth = 3; ctx.strokeStyle = INK.bg; ctx.stroke();
+        ctx.font = '800 14px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = INK.bg;
+        ctx.fillText(String(t.n), X, Y + 0.5);
+      }
       const rc = live.recovery;
       if (live.offRoute && rc?.ll?.length > 1) {
         ctx.beginPath();
@@ -202,17 +250,16 @@ export function mountMap(container) {
       }
     } else guess.hidden = true;
     if (live.started && GRAPH && !live.lockLL) { try { checkOffRoute(x0, y0, v, now, st ?? {}, live); } catch (e) { console.warn('off-route check', e); } }   // locked: the tracker says
-    // The track driven so far (1 s points; the last 2 hours).
+    // Where you've been: the 1 s track (the last 2 hours) as a thin grey dotted trail (each point converted once).
     const tr = live.track || [];
-    if (tr.length > 1) {
+    if (trackXY.src !== tr || tr.length < trackXY.n) trackXY = { src: tr, n: 0, xy: [] };
+    for (; trackXY.n < tr.length; trackXY.n++) trackXY.xy.push(MAP.toLocal(tr[trackXY.n][1], tr[trackXY.n][2]));
+    if (trackXY.xy.length > 1) {
       ctx.beginPath();
-      const from = Math.max(0, tr.length - 7200);
-      for (let j = from; j < tr.length; j++) {
-        const [x, y] = MAP.toLocal(tr[j][1], tr[j][2]);
-        if (j === from) ctx.moveTo(sx(x, y), sy(x, y)); else ctx.lineTo(sx(x, y), sy(x, y));
-      }
+      const from = Math.max(0, trackXY.xy.length - 7200);
+      for (let j = from; j < trackXY.xy.length; j++) { const [x, y] = trackXY.xy[j]; if (j === from) ctx.moveTo(sx(x, y), sy(x, y)); else ctx.lineTo(sx(x, y), sy(x, y)); }
       ctx.lineTo(cx, cy);
-      ctx.strokeStyle = INK.track; ctx.lineWidth = 4; ctx.globalAlpha = 0.75; ctx.stroke(); ctx.globalAlpha = 1;
+      ctx.strokeStyle = INK.trail; ctx.lineWidth = 4; ctx.globalAlpha = 0.85; ctx.setLineDash([1, 8]); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
     }
     labels(ctx, vis, sx, sy, W, H, mpp, ontoKey);
     // Covered bridges.
@@ -244,7 +291,7 @@ export function mountMap(container) {
     road.textContent = nm ? `On ${nm}` : '';
   }
 
-  return { update, destroy() { root.remove(); } };
+  return { update, destroy() { alive = false; cancelAnimationFrame(raf); root.remove(); } };
 }
 
 // Road names: each name once, on its longest straight stretch in view, upright, without overlaps.
@@ -278,4 +325,41 @@ function labels(ctx, vis, sx, sy, W, H, mpp, ontoKey) {
     halo(ctx, L.name, 0, 0, L.onto ? INK.onto : INK.label);
     ctx.restore();
   }
+}
+
+// Chevrons along a screen polyline every `gap` px, pointing the way it runs: where you're going, at a glance.
+function chevrons(ctx, pts, gap, size, color) {
+  let carry = gap / 2;
+  ctx.strokeStyle = color; ctx.lineWidth = Math.max(2.5, size * 0.55); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  for (let i = 1; i < pts.length; i++) {
+    const [ax, ay] = pts[i - 1], [bx, by] = pts[i], L = Math.hypot(bx - ax, by - ay);
+    if (L < 1e-6) continue;
+    const ux = (bx - ax) / L, uy = (by - ay) / L;
+    let d = carry;
+    for (; d < L; d += gap) {
+      const px = ax + ux * d, py = ay + uy * d;
+      ctx.beginPath();
+      ctx.moveTo(px - ux * size - uy * size, py - uy * size + ux * size);
+      ctx.lineTo(px, py);
+      ctx.lineTo(px - ux * size + uy * size, py - uy * size - ux * size);
+      ctx.stroke();
+    }
+    carry = d - L;
+  }
+}
+
+// The locked route's direction at the car (from 5 m behind to 25 m ahead), when the car is on it: steady even
+// when slow or stopped, where the GPS course wanders. Degrees from north, or null.
+function routeBearing(live) {
+  const tr = live?.tracker;
+  if (!tr || !tr.on || tr.s === null || !(tr.dist <= 25)) return null;
+  const at = (s) => {
+    const { pts, cum } = tr;
+    let k = 0;
+    while (k + 2 < cum.length && cum[k + 1] < s) k++;
+    const f = Math.max(0, Math.min(1, (s - cum[k]) / (cum[k + 1] - cum[k] || 1)));
+    return [pts[k][0] + (pts[k + 1][0] - pts[k][0]) * f, pts[k][1] + (pts[k + 1][1] - pts[k][1]) * f];
+  };
+  const [ax, ay] = at(tr.s - 5), [bx, by] = at(tr.s + 25);
+  return Math.hypot(bx - ax, by - ay) < 1 ? null : (Math.atan2(bx - ax, by - ay) * 180 / Math.PI + 360) % 360;
 }
